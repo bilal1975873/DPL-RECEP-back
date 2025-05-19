@@ -1,0 +1,9 @@
+fuzzywuzzy
+python-Levenshtein
+msal
+msgraph-sdk
+python-dotenv
+requests
+azure-identity
+pymongo
+fastapi
