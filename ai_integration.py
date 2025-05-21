@@ -3,6 +3,9 @@ import json
 import requests
 import asyncio
 from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta, timezone
+import msal
+from msal import PublicClientApplication
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 from msgraph.generated.models.event import Event
@@ -16,10 +19,10 @@ from msgraph.generated.models.location_type import LocationType
 from fuzzywuzzy import fuzz
 from dotenv import load_dotenv
 from prompts import SYSTEM_PERSONALITY, STEP_PROMPTS, RESPONSE_TEMPLATES, FLOW_CONSTRAINTS
-from datetime import datetime, timedelta
-from msal import PublicClientApplication
 import threading
 import time
+from kiota_abstractions.request_information import RequestInformation
+from kiota_abstractions.method import Method
 
 # Load environment variables
 load_dotenv()
@@ -31,29 +34,36 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
 class AIReceptionist:
     def __init__(self):
+        self._system_account_email = "SaadSaad@DPL660.onmicrosoft.com"  # Admin account for application permissions
         self.graph_client = self._initialize_graph_client()
         self.ollama_url = "http://localhost:11434/api/generate"
         self._chat_id_cache = {}  # In-memory cache for chat IDs
         self._chat_id_cache_lock = threading.Lock()
-        self._system_account_email = "saadsaad@dpl660.onmicrosoft.com"
 
     def _initialize_graph_client(self) -> Optional[GraphServiceClient]:
-        """Initialize the Microsoft Graph client with proper scope."""
+        """Initialize the Microsoft Graph client with application permissions."""
         try:
             if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
                 print("Error: Missing required Azure AD credentials in environment variables")
                 return None
+                
+            print(f"Initializing Graph client with admin account: {self._system_account_email}")
+            
             credential = ClientSecretCredential(
                 tenant_id=TENANT_ID,
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET
             )
-            # Only use .default scope for client credentials flow
-            scopes = [
-                'https://graph.microsoft.com/.default'
-            ]
-            client = GraphServiceClient(credentials=credential, scopes=scopes)
-            print("Successfully connected to Microsoft Graph API")
+            
+            # Using .default scope which includes all application permissions granted to the app
+            scopes = ['https://graph.microsoft.com/.default']
+            
+            client = GraphServiceClient(
+                credentials=credential,
+                scopes=scopes
+            )
+            
+            print("Successfully connected to Microsoft Graph API with application permissions")
             return client
         except Exception as e:
             print(f"Error initializing Graph client: {e}")
@@ -456,3 +466,94 @@ class AIReceptionist:
         except Exception as e:
             print(f"Error scheduling meeting: {str(e)}")
             return False
+
+    async def get_scheduled_meetings(self, host_email: str, visitor_name: str, check_time: datetime) -> Optional[List[Dict[str, Any]]]:
+        """Check host's calendar for scheduled meetings using Microsoft Graph API."""
+        try:
+            from datetime import datetime, timedelta, timezone
+            import requests
+
+            # Initialize MSAL client
+            app = msal.ConfidentialClientApplication(
+                CLIENT_ID,
+                authority=f"https://login.microsoftonline.com/{TENANT_ID}",
+                client_credential=CLIENT_SECRET,
+            )
+
+            # Get token
+            result = app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+
+            if "access_token" not in result:
+                print("Could not acquire token")
+                return None
+
+            token = result["access_token"]
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            }
+
+            # Set up time range for today
+            now_utc = datetime.now(timezone.utc)
+            start_of_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = now_utc.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+            # Format times for Microsoft Graph API
+            start_time = start_of_day.isoformat(timespec="seconds").replace("+00:00", "Z")
+            end_time = end_of_day.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+            # Prepare calendar API call
+            url = (
+                f"https://graph.microsoft.com/v1.0/users/{host_email}/calendar/calendarView"
+                f"?startDateTime={start_time}&endDateTime={end_time}"
+                f"&$orderby=start/dateTime&$top=20"
+            )
+
+            response = requests.get(url, headers=headers)
+
+            if response.status_code == 200:
+                events = response.json().get("value", [])
+                meetings = []
+                
+                for event in events:
+                    subject = (event.get("subject", "") or "").lower()
+                    body = (event.get("body", {}).get("content", "") or "").lower()
+                    visitor_name_lower = visitor_name.lower()
+                    
+                    start = event.get("start", {}).get("dateTime")
+                    if start:
+                        start_dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                        meeting = {
+                            "scheduled_time": start_dt.strftime("%I:%M %p"),
+                            "purpose": event.get("subject", "Pre-scheduled meeting"),
+                            "original_event": event
+                        }
+                        meetings.append(meeting)
+                
+                return meetings if meetings else None
+            else:
+                print(f"Error fetching calendar events: {response.status_code}")
+                print(response.text)
+                return None
+
+        except Exception as e:
+            print(f"Error checking calendar: {str(e)}")
+            return None
+
+    async def handle_employee_selection(self, user_input: str, employee_matches: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Handle employee selection from a list of matches"""
+        print(f"[DEBUG] Processing employee selection input: {user_input}")
+        print(f"[DEBUG] Available matches: {len(employee_matches)} employees")
+        
+        if user_input.isdigit():
+            selection = int(user_input)
+            if selection == 0:
+                print("[DEBUG] User chose to enter a different name")
+                return None
+            if 1 <= selection <= len(employee_matches):
+                selected = employee_matches[selection - 1]
+                print(f"[DEBUG] Selected employee: {selected['displayName']}")
+                return selected
+        
+        print(f"[DEBUG] Invalid selection: {user_input}")
+        return None

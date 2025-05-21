@@ -20,10 +20,11 @@ visitors_collection = db["visitors"]
 
 # Pydantic Visitor model
 class Visitor(BaseModel):
-    type: Literal['guest', 'vendor']
+    type: Literal['guest', 'vendor', 'prescheduled']
     full_name: str
-    cnic: str
+    cnic: Optional[str] = None
     phone: str
+    email: Optional[str] = None
     host: str
     purpose: str
     entry_time: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -32,6 +33,7 @@ class Visitor(BaseModel):
     group_id: Optional[str] = None
     total_members: int = 1
     group_members: list = []
+    scheduled_time: Optional[datetime] = None
 
 app = FastAPI()
 
@@ -82,7 +84,7 @@ def delete_visitor(cnic: str):
         raise HTTPException(status_code=404, detail="Visitor not found.")
     return {"detail": "Visitor deleted."}
 
-def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is_group_visit=False, group_members=None, total_members=1):
+def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is_group_visit=False, group_members=None, total_members=1, email=None, scheduled_time=None):
     entry_time = datetime.now(timezone.utc)
     group_id = None
     
@@ -94,6 +96,7 @@ def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is
         "full_name": full_name,
         "cnic": cnic,
         "phone": phone,
+        "email": email,  # Added email field
         "host": host,
         "purpose": purpose,
         "entry_time": entry_time,
@@ -101,7 +104,8 @@ def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is
         "is_group_visit": is_group_visit,
         "group_id": group_id,
         "total_members": total_members,
-        "group_members": group_members or []
+        "group_members": group_members or [],
+        "scheduled_time": scheduled_time  # Added scheduled_time field
     }
     visitors_collection.insert_one(visitor_doc)
 
@@ -121,6 +125,8 @@ class VisitorInfo:
         self.is_group_visit = False
         self.group_members = []  # List to store additional visitors
         self.total_members = 1  # Default to 1, will be updated for groups
+        self.visitor_email = None  # For pre-scheduled visits
+        self.scheduled_meeting = None  # For storing found meeting details
         
     def to_dict(self):
         return {
@@ -137,7 +143,9 @@ class VisitorInfo:
             "group_id": self.group_id,
             "is_group_visit": self.is_group_visit,
             "total_members": self.total_members,
-            "group_members": self.group_members
+            "group_members": self.group_members,
+            "visitor_email": self.visitor_email,
+            "scheduled_meeting": self.scheduled_meeting
         }
     
     def summary(self):
@@ -175,11 +183,13 @@ class DPLReceptionist:
             elif user_input in ["2", "vendor"]:
                 self.visitor_info.visitor_type = "vendor"
                 self.current_step = "supplier"
-            elif user_input == "3":
-                return "This feature is not yet implemented. Please select option 1 for guest or 2 for vendor registration."
+            elif user_input in ["3", "prescheduled", "scheduled"]:
+                self.visitor_info.visitor_type = "prescheduled"
+                self.current_step = "scheduled_name"
+                return "Please enter your name."
             else:
                 # Repeat the visitor type selection message if invalid
-                return "Please select your visitor type: 1 for Guest, 2 for Vendor."
+                return "Please select your visitor type: 1 for Guest, 2 for Vendor, 3 for Pre-scheduled Meeting."
             context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
             if self.current_step == "supplier":
                 # Always show supplier list immediately
@@ -187,22 +197,74 @@ class DPLReceptionist:
                 return f"Please select your supplier company:\n{supplier_list}"
             return await self.get_ai_response(user_input, context)
 
-        # Employee selection mode (for host selection)
-        if self.employee_selection_mode:
-            if user_input.isdigit() and int(user_input) == 0:
-                self.employee_selection_mode = False
-                context = {"current_step": "host", **self.visitor_info.to_dict()}
-                return await self.get_ai_response(user_input, context)
-            elif user_input.isdigit() and 1 <= int(user_input) <= len(self.employee_matches):
-                selected = self.employee_matches[int(user_input) - 1]
-                self.visitor_info.host_confirmed = selected["displayName"]
-                self.visitor_info.host_email = selected["email"]
-                self.employee_selection_mode = False
-                self.current_step = "purpose"
-                context = {"current_step": "purpose", **self.visitor_info.to_dict()}
-                return await self.get_ai_response(user_input, context)
-            else:
-                return "I found multiple potential matches. Please select one by number or 0 to enter a different name."
+        # Handle pre-scheduled meeting flow
+        if self.visitor_info.visitor_type == "prescheduled":
+            if self.current_step == "scheduled_name":
+                if not user_input.strip():
+                    return "Please enter your name."
+                self.visitor_info.visitor_name = user_input.strip()
+                self.current_step = "scheduled_contact"
+                return "Please enter your phone number and email (separated by space)."
+            elif self.current_step == "scheduled_contact":
+                # First collect phone number
+                if not self.visitor_info.visitor_phone:
+                    if not validate_phone(user_input.strip()):
+                        return "Please enter a valid phone number."
+                    self.visitor_info.visitor_phone = user_input.strip()
+                    return "Please enter your email address."
+                # Then collect email
+                else:
+                    email = user_input.strip()
+                    if "@" not in email or "." not in email.split("@")[1]:
+                        return "Please enter a valid email address."
+                    self.visitor_info.visitor_email = email
+                    self.current_step = "scheduled_host"
+                    return "Please enter your host's name."
+            elif self.current_step == "scheduled_host":
+                return await self.handle_scheduled_host_step(user_input)
+            elif self.current_step == "scheduled_confirm":
+                if user_input.lower() == "confirm":
+                    self.current_step = "complete"
+                    meeting = self.visitor_info.scheduled_meeting
+                    # Insert into DB
+                    scheduled_time = None
+                    start_time = meeting.get('original_event', {}).get('start', {}).get('dateTime')
+                    if start_time:
+                        scheduled_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                    
+                    insert_visitor_to_db(
+                        visitor_type="prescheduled",
+                        full_name=self.visitor_info.visitor_name,
+                        cnic="",  # Not required for pre-scheduled
+                        phone=self.visitor_info.visitor_phone,
+                        host=self.visitor_info.host_confirmed,
+                        purpose=meeting['purpose'],
+                        is_group_visit=False,
+                        email=self.visitor_info.visitor_email,
+                        scheduled_time=scheduled_time
+                    )
+                    # Notify host via Teams
+                    try:
+                        access_token = self.ai.get_system_account_token()
+                        host_user_id = self.ai.get_user_id(self.visitor_info.host_email, access_token)
+                        system_user_id = self.ai.get_user_id(self.ai._system_account_email, access_token)
+                        chat_id = self.ai.create_or_get_chat(host_user_id, system_user_id, access_token)
+                        message = f"""Your scheduled visitor has arrived:
+Name: {self.visitor_info.visitor_name}
+Phone: {self.visitor_info.visitor_phone}
+Email: {self.visitor_info.visitor_email}
+Scheduled Time: {meeting['scheduled_time']}
+Purpose: {meeting['purpose']}"""
+                        self.ai.send_message_to_host(chat_id, access_token, message)
+                        print(f"Teams notification sent to {self.visitor_info.host_confirmed}")
+                    except Exception as e:
+                        print(f"Error in Teams notification process: {e}")
+                    return f"Welcome! Please take a seat. {self.visitor_info.host_confirmed} has been notified of your arrival."
+                elif user_input.lower() == "back":
+                    self.current_step = "scheduled_host"
+                    return "Please enter your host's name."
+                else:
+                    return "Please type 'confirm' to proceed or 'back' to re-enter the host name."
 
         # Guest flow (strict, only hardcoded prompts, strict step order)
         if self.visitor_info.visitor_type == "guest":
@@ -274,23 +336,49 @@ class DPLReceptionist:
                         self.current_step = "host"
                         return "Who are you visiting?"
             elif self.current_step == "host":
-                employee = await self.ai.search_employee(user_input)
-                if isinstance(employee, dict):
-                    self.visitor_info.host_confirmed = employee["displayName"]
-                    self.visitor_info.host_email = employee["email"]
-                    self.current_step = "purpose"
-                    return "Please provide the purpose of your visit."
-                elif isinstance(employee, list):
-                    self.employee_selection_mode = True
-                    self.employee_matches = employee
-                    options = "I found multiple potential matches. Please select one by number:\n"
-                    for i, emp in enumerate(employee, 1):
-                        dept = emp.get("department", "Unknown Department")
-                        options += f"  {i}. {emp['displayName']} ({dept})\n"
-                    options += "  0. None of these / Enter a different name"
-                    return options
+                if self.employee_selection_mode:
+                    # Handle employee selection from the list
+                    selected_employee = await self.ai.handle_employee_selection(user_input, self.employee_matches)
+                    if selected_employee:
+                        self.visitor_info.host_confirmed = selected_employee["displayName"]
+                        self.visitor_info.host_email = selected_employee["email"]
+                        # Reset selection mode
+                        self.employee_selection_mode = False
+                        self.employee_matches = []
+                        self.current_step = "purpose"
+                        return "Please provide the purpose of your visit."
+                    elif user_input == "0":
+                        # User wants to search for a different name
+                        self.employee_selection_mode = False
+                        self.employee_matches = []
+                        return "Please enter a different name."
+                    else:
+                        # Invalid selection, show options again
+                        options = "Please select a valid number:\n"
+                        for i, emp in enumerate(self.employee_matches, 1):
+                            dept = emp.get("department", "Unknown Department")
+                            options += f"  {i}. {emp['displayName']} ({dept})\n"
+                        options += "  0. None of these / Enter a different name"
+                        return options
                 else:
-                    return "No matches found. Please enter a different name."
+                    # Search for employee by name
+                    employee = await self.ai.search_employee(user_input)
+                    if isinstance(employee, dict):
+                        self.visitor_info.host_confirmed = employee["displayName"]
+                        self.visitor_info.host_email = employee["email"]
+                        self.current_step = "purpose"
+                        return "Please provide the purpose of your visit."
+                    elif isinstance(employee, list):
+                        self.employee_selection_mode = True
+                        self.employee_matches = employee
+                        options = "I found multiple potential matches. Please select one by number:\n"
+                        for i, emp in enumerate(employee, 1):
+                            dept = emp.get("department", "Unknown Department")
+                            options += f"  {i}. {emp['displayName']} ({dept})\n"
+                        options += "  0. None of these / Enter a different name"
+                        return options
+                    else:
+                        return "No matches found. Please enter a different name."
             elif self.current_step == "purpose":
                 if not user_input.strip():
                     return "Please provide the purpose of your visit."
@@ -531,6 +619,87 @@ class DPLReceptionist:
             
             # After printing response, if we're in complete state,
             # don't wait for user input before resetting
+
+    async def handle_scheduled_host_step(self, user_input: str) -> str:
+        """Handle the host selection step for pre-scheduled meetings"""
+        # If in employee selection mode, handle the selection
+        if self.employee_selection_mode:
+            selected_employee = await self.ai.handle_employee_selection(user_input, self.employee_matches)
+            if selected_employee:
+                self.visitor_info.host_confirmed = selected_employee["displayName"]
+                self.visitor_info.host_email = selected_employee["email"]
+                # Reset selection mode
+                self.employee_selection_mode = False
+                self.employee_matches = []
+                
+                # Check for scheduled meetings
+                meetings = await self.ai.get_scheduled_meetings(
+                    self.visitor_info.host_email,
+                    self.visitor_info.visitor_name,
+                    datetime.now(timezone.utc)
+                )
+                
+                if not meetings:
+                    return "No scheduled meetings found with this host for today. Please confirm:\n1. You're here for a pre-scheduled meeting\n2. The host name is correct\n3. Your name matches the calendar entry\n\nType 'back' to re-enter the host name or 'confirm' to proceed anyway."
+                
+                # Found scheduled meetings
+                self.visitor_info.scheduled_meeting = meetings[0]  # Take the first matching meeting
+                self.current_step = "scheduled_confirm"
+                
+                meeting_info = (
+                    f"Found your scheduled meeting:\n"
+                    f"Time: {meetings[0]['scheduled_time']}\n"
+                    f"Purpose: {meetings[0]['purpose']}\n\n"
+                    f"Type 'confirm' to proceed or 'back' to re-enter the host name."
+                )
+                return meeting_info
+            else:
+                return "Please select a valid host from the list by number, or enter 0 to search for a different name."
+
+        # Not in selection mode - search for the host
+        employee = await self.ai.search_employee(user_input)
+        if isinstance(employee, dict):
+            self.visitor_info.host_confirmed = employee["displayName"]
+            self.visitor_info.host_email = employee["email"]
+            
+            # Check for scheduled meetings
+            meetings = await self.ai.get_scheduled_meetings(
+                self.visitor_info.host_email,
+                self.visitor_info.visitor_name,
+                datetime.now(timezone.utc)
+            )
+            
+            if not meetings:
+                return "No scheduled meetings found with this host for today. Please confirm:\n1. You're here for a pre-scheduled meeting\n2. The host name is correct\n3. Your name matches the calendar entry\n\nType 'back' to re-enter the host name or 'confirm' to proceed anyway."
+            
+            # Found scheduled meetings
+            self.visitor_info.scheduled_meeting = meetings[0]  # Take the first matching meeting
+            self.current_step = "scheduled_confirm"
+            
+            meeting_info = (
+                f"Found your scheduled meeting:\n"
+                f"Time: {meetings[0]['scheduled_time']}\n"
+                f"Purpose: {meetings[0]['purpose']}\n\n"
+                f"Type 'confirm' to proceed or 'back' to re-enter the host name."
+            )
+            return meeting_info
+            
+        elif isinstance(employee, list):
+            self.employee_selection_mode = True
+            self.employee_matches = employee
+            options = "I found multiple potential matches. Please select one by number:\n"
+            for i, emp in enumerate(employee, 1):
+                dept = emp.get("department", "Unknown Department")
+                options += f"  {i}. {emp['displayName']} ({dept})\n"
+            options += "  0. None of these / Enter a different name"
+            return options
+        else:
+            return "No matches found. Please enter a different name."
+
+    async def get_ai_response(self, user_input: str, context: dict) -> str:
+        """Get a response from the AI model based on the current context"""
+        # Use synchronous version for simplicity
+        return self.ai.process_visitor_input(user_input, context)
 
 class MessageRequest(BaseModel):
     message: str

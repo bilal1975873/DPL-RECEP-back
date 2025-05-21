@@ -6,7 +6,7 @@ Designed to maintain deterministic and professional behavior across all steps.
 
 # ========== Constants ========== 
 
-HARDCODED_WELCOME = """Welcome to DPL! I am your AI receptionist. Please select your visitor type:\n\n1. I am guest\n2. I am vendor\n3. I am here for pre-scheduled meeting (not yet implemented)"""
+HARDCODED_WELCOME = """Welcome to DPL! I am your AI receptionist. Please select your visitor type:\n\n1. I am guest\n2. I am vendor\n3. I am here for a pre-scheduled meeting"""
 
 SUPPLIERS = [
     "Maclife",
@@ -41,7 +41,12 @@ STEP_PROMPTS = {
     "host": "Who are you visiting?",
     "purpose": "Please provide the purpose of your visit.",
     "confirm": "Please review your information. Type 'confirm' to proceed or 'edit' to make changes.",
-    "complete": "Your registration is complete."
+    "complete": "Your registration is complete.",
+    # Pre-scheduled meeting steps
+    "scheduled_name": "Please enter your name.",
+    "scheduled_contact": "Please enter your phone number and email (separated by space).",
+    "scheduled_host": "Please enter your host's name.",
+    "scheduled_confirm": "Please review your information. Type 'confirm' to proceed or 'back' to re-enter the host name."
 }
 
 # ========== Response Templates ========== 

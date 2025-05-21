@@ -12,6 +12,16 @@ def validate_cnic(cnic: str) -> bool:
 
 def validate_phone(phone: str) -> bool:
     return bool(re.match(PHONE_PATTERN, phone))
+    
+# Pre-scheduled meeting flow requirements and steps
+prescheduled_flow = {
+    "required_fields": ["visitor_name", "visitor_phone", "visitor_email", "host_confirmed"],
+    "steps": ["scheduled_name", "scheduled_contact", "scheduled_host", "scheduled_confirm", "complete"],
+    "validations": {
+        "visitor_phone": validate_phone,
+        "visitor_email": lambda email: "@" in email and "." in email.split("@")[1]
+    }
+}
 
 # Guest flow requirements and steps
 # Sync with main.py: name, group_size, cnic, phone, host, purpose, confirm, complete
