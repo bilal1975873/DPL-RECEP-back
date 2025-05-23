@@ -8,3 +8,4 @@ azure-identity
 motor==3.3.2
 pymongo[srv]==4.6.1
 fastapi
+boto3
