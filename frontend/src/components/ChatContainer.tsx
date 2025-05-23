@@ -14,40 +14,35 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
   isLoading,
   onSend,
 }) => {
+  const messagesEndRef = React.useRef<HTMLDivElement>(null);
   const chatContainerRef = React.useRef<HTMLDivElement>(null);
   const [shouldAutoScroll, setShouldAutoScroll] = React.useState(true);
-  const [isScrolling, setIsScrolling] = React.useState(false);
 
   const scrollToBottom = React.useCallback(() => {
-    if (shouldAutoScroll && !isScrolling && chatContainerRef.current) {
-      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    if (shouldAutoScroll) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [shouldAutoScroll, isScrolling]);
+  }, [shouldAutoScroll]);
 
   const handleScroll = () => {
     const container = chatContainerRef.current;
     if (container) {
-      setIsScrolling(true);
       const isAtBottom =
-        Math.abs(
-          container.scrollHeight - container.scrollTop - container.clientHeight
-        ) < 10;
+        container.scrollHeight - container.scrollTop <= container.clientHeight + 100;
       setShouldAutoScroll(isAtBottom);
-      setTimeout(() => setIsScrolling(false), 150);
     }
   };
 
   React.useEffect(() => {
-    setTimeout(scrollToBottom, 100);
+    scrollToBottom();
   }, [messages, scrollToBottom]);
 
   return (
-    <div className="flex flex-col w-full max-w-4xl mx-auto" style={{ height: 'calc(100vh - 180px)' }}>
+    <div className="flex flex-col h-full min-h-0 w-full max-w-4xl mx-auto">
       <div
         ref={chatContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto overflow-x-hidden custom-scrollbar p-4 space-y-4 glass-effect rounded-t-2xl"
-        style={{ maxHeight: 'calc(100vh - 240px)' }}
+        className="flex-1 min-h-0 overflow-y-auto custom-scrollbar p-4 space-y-4 glass-effect rounded-t-2xl"
       >
         {messages.map((message, index) => (
           <ChatBubble
@@ -64,10 +59,9 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             <div className="w-2 h-2 rounded-full bg-current"></div>
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
-      <div className="mt-4 sticky bottom-0 bg-transparent">
-        <ChatInput onSend={onSend} isLoading={isLoading} />
-      </div>
+      <ChatInput onSend={onSend} isLoading={isLoading} />
     </div>
   );
 };

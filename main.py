@@ -3,22 +3,69 @@ from flows import (guest_flow, SUPPLIERS, vendor_flow, validate_cnic, validate_p
                   validate_group_size, get_error_message)
 from prompts import STEP_PROMPTS
 import asyncio
+import os
+from dotenv import load_dotenv
 
 # --- FastAPI & MongoDB Integration ---
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
-from pymongo import MongoClient
+from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timezone, timedelta
-import os
-import boto3
-import time
 
-# MongoDB setup
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
-client = MongoClient(MONGO_URI)
-db = client["dpl_receptionist_db"]
+# Initialize FastAPI app with lifespan context
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Initialize MongoDB connection
+    retries = 3
+    while retries > 0:
+        try:
+            await client.admin.command('ping')
+            print("MongoDB connected to Atlas successfully!")
+            break
+        except Exception as e:
+            retries -= 1
+            if retries > 0:
+                print(f"Failed to connect to MongoDB Atlas: {e}. Retrying... ({retries} attempts left)")
+                await asyncio.sleep(2)  # Wait 2 seconds before retrying
+            else:
+                print(f"Failed to connect to MongoDB Atlas after multiple attempts: {e}")
+                raise
+    
+    yield  # Application runs here
+    
+    # Shutdown: Close MongoDB connection
+    client.close()
+    print("MongoDB connection closed.")
+
+app = FastAPI(lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",  # Local development
+        "https://front-recep-dpl.vercel.app"  # Production deployment
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Load environment variables
+load_dotenv()
+
+# MongoDB Atlas setup
+MONGODB_URI = os.getenv("MONGODB_URI")
+if not MONGODB_URI:
+    raise ValueError("MONGODB_URI environment variable is not set")
+
+# Initialize MongoDB client
+client = AsyncIOMotorClient(MONGODB_URI)
+db = client.get_default_database()
 visitors_collection = db["visitors"]
 
 # Pydantic Visitor model
@@ -38,56 +85,60 @@ class Visitor(BaseModel):
     group_members: list = []
     scheduled_time: Optional[datetime] = None
 
-app = FastAPI()
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Frontend URL
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# MongoDB error handler
+async def handle_db_operation(operation):
+    try:
+        return await operation
+    except Exception as e:
+        print(f"MongoDB operation failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Database operation failed: {str(e)}"
+        )
 
 @app.post("/visitors/", response_model=Visitor)
-def create_visitor(visitor: Visitor):
+async def create_visitor(visitor: Visitor):
     data = visitor.dict()
-    result = visitors_collection.insert_one(data)
+    result = await handle_db_operation(visitors_collection.insert_one(data))
     if not result.acknowledged:
         raise HTTPException(status_code=500, detail="Failed to insert visitor.")
     data["_id"] = str(result.inserted_id)
     return visitor
 
 @app.get("/visitors/", response_model=list[Visitor])
-def list_visitors():
-    visitors = list(visitors_collection.find())
-    for v in visitors:
-        v.pop("_id", None)
+async def list_visitors():
+    visitors = []
+    cursor = visitors_collection.find()
+    async for visitor in cursor:
+        visitor["_id"] = str(visitor["_id"])
+        visitors.append(visitor)
     return visitors
 
 @app.get("/visitors/{cnic}", response_model=Visitor)
-def get_visitor(cnic: str):
-    visitor = visitors_collection.find_one({"cnic": cnic})
+async def get_visitor(cnic: str):
+    visitor = await handle_db_operation(visitors_collection.find_one({"cnic": cnic}))
     if not visitor:
         raise HTTPException(status_code=404, detail="Visitor not found.")
-    visitor.pop("_id", None)
+    visitor["_id"] = str(visitor["_id"])
     return Visitor(**visitor)
 
 @app.put("/visitors/{cnic}", response_model=Visitor)
-def update_visitor(cnic: str, update: Visitor):
-    result = visitors_collection.update_one({"cnic": cnic}, {"$set": update.dict()})
+async def update_visitor(cnic: str, update: Visitor):
+    result = await handle_db_operation(
+        visitors_collection.update_one({"cnic": cnic}, {"$set": update.dict()})
+    )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Visitor not found.")
     return update
 
 @app.delete("/visitors/{cnic}")
-def delete_visitor(cnic: str):
-    result = visitors_collection.delete_one({"cnic": cnic})
+async def delete_visitor(cnic: str):
+    result = await handle_db_operation(visitors_collection.delete_one({"cnic": cnic}))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Visitor not found.")
     return {"detail": "Visitor deleted."}
 
-def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is_group_visit=False, group_members=None, total_members=1, email=None, scheduled_time=None):
+async def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is_group_visit=False, group_members=None, total_members=1, email=None, scheduled_time=None):
     entry_time = datetime.now(timezone.utc)
     group_id = None
     
@@ -110,7 +161,7 @@ def insert_visitor_to_db(visitor_type, full_name, cnic, phone, host, purpose, is
         "group_members": group_members or [],
         "scheduled_time": scheduled_time  # Added scheduled_time field
     }
-    visitors_collection.insert_one(visitor_doc)
+    await visitors_collection.insert_one(visitor_doc)
 
 class VisitorInfo:
     def __init__(self):
@@ -267,7 +318,7 @@ class DPLReceptionist:
                         if start_time:
                             scheduled_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
                         
-                        insert_visitor_to_db(
+                        await insert_visitor_to_db(
                             visitor_type="prescheduled",
                             full_name=self.visitor_info.visitor_name,
                             cnic=self.visitor_info.visitor_cnic,
@@ -297,7 +348,7 @@ Purpose: {meeting['purpose']}"""
                         return f"Welcome! Please take a seat. {self.visitor_info.host_confirmed} has been notified of your arrival."
                     else:
                         # Handle guest flow confirmation
-                        insert_visitor_to_db(
+                        await insert_visitor_to_db(
                             visitor_type="guest",
                             full_name=self.visitor_info.visitor_name,
                             cnic=self.visitor_info.visitor_cnic,
@@ -503,7 +554,7 @@ Purpose: {meeting['purpose']}"""
             elif self.current_step == "confirm":
                 if user_input.lower() == "confirm":
                     self.current_step = "complete"
-                    insert_visitor_to_db(
+                    await insert_visitor_to_db(
                         visitor_type=self.visitor_info.visitor_type or "guest",
                         full_name=self.visitor_info.visitor_name or "",
                         cnic=self.visitor_info.visitor_cnic or "",
@@ -695,7 +746,7 @@ Purpose: {meeting['purpose']}"""
                     context["current_step"] = self.current_step
                     
                     # Save to database
-                    insert_visitor_to_db(
+                    await insert_visitor_to_db(
                         visitor_type="vendor",
                         full_name=self.visitor_info.visitor_name or "",
                         cnic=self.visitor_info.visitor_cnic or "",
