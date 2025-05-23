@@ -2,43 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  body {
+    @apply bg-dark-900 text-white;
+  }
+}
+
 @layer components {
   .btn-primary {
-    @apply px-4 py-2 bg-primary-700 text-white rounded-xl font-semibold shadow hover:bg-primary-800 focus:outline-none focus:ring-2 focus:ring-primary-400 focus:ring-offset-2 transition-colors duration-150;
+    @apply px-4 py-2 bg-primary-600 text-white rounded-xl font-semibold shadow-md hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 focus:ring-offset-dark-900 transition-colors duration-200 disabled:bg-dark-600 disabled:text-gray-400 disabled:cursor-not-allowed;
   }
   
   .input-field {
-    @apply block w-full rounded-xl border border-primary-200 shadow focus:border-primary-500 focus:ring-primary-400 bg-white/80 text-primary-900 placeholder:text-primary-400 transition;
+    @apply block w-full rounded-xl border border-dark-600 shadow-inner focus:border-primary-500 focus:ring-1 focus:ring-primary-500 bg-dark-700 text-white placeholder:text-gray-400 transition-all duration-200;
   }
   
   .chat-bubble {
-    @apply max-w-[80%] rounded-2xl p-4 mb-2 shadow;
+    @apply max-w-[80%] rounded-2xl p-4 mb-2 shadow-md;
   }
   
   .chat-bubble-user {
-    @apply chat-bubble bg-primary-100 text-primary-900 ml-auto;
+    @apply chat-bubble bg-primary-600 text-white ml-auto border border-primary-500;
   }
   
   .chat-bubble-bot {
-    @apply chat-bubble bg-gray-100 text-gray-900;
+    @apply chat-bubble bg-dark-700 text-white border border-dark-600;
+  }
+
+  .glass-effect {
+    @apply bg-dark-800/80 backdrop-blur-md border border-dark-600 shadow-lg;
   }
 }
 
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { 
+    opacity: 0; 
+    transform: translateY(10px); 
+  }
+  to { 
+    opacity: 1; 
+    transform: translateY(0); 
+  }
 }
+
 .animate-fade-in {
   animation: fade-in 0.4s cubic-bezier(0.4,0,0.2,1);
 }
 
-.custom-scrollbar::-webkit-scrollbar {
-  width: 8px;
-  background: transparent;
-}
-.custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #bae6fd;
-  border-radius: 8px;
+.chat-container {
+  @apply bg-dark-800/80 backdrop-blur-md border border-dark-600 rounded-2xl shadow-lg;
 }
 
 :root {
@@ -63,6 +75,22 @@ a {
 }
 a:hover {
   color: #535bf2;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
 }
 
 body {

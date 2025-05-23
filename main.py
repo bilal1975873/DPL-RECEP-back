@@ -1,5 +1,7 @@
 from ai_integration import AIReceptionist
-from flows import guest_flow, SUPPLIERS, vendor_flow, validate_cnic, validate_phone
+from flows import (guest_flow, SUPPLIERS, vendor_flow, validate_cnic, validate_phone, validate_name, validate_email,
+                  validate_group_size, get_error_message)
+from prompts import STEP_PROMPTS
 import asyncio
 
 # --- FastAPI & MongoDB Integration ---
@@ -8,8 +10,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from pymongo import MongoClient
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
+import boto3
 import time
 
 # MongoDB setup
@@ -177,92 +180,145 @@ class DPLReceptionist:
         # Handle visitor type selection (only at the very start)
         if self.current_step == "visitor_type":
             user_input = user_input.lower().strip()
+            context = {"current_step": "visitor_type", **self.visitor_info.to_dict()}
+            
+            # Handle invalid input before trying AI response
+            if not user_input:
+                return "Please select: 1 for Guest, 2 for Vendor, 3 for Pre-scheduled Meeting"
+            
+            # First try AI response for visitor type
+            ai_response = await self.get_ai_response(user_input, context)
+            
             if user_input in ["1", "guest"]:
                 self.visitor_info.visitor_type = "guest"
                 self.current_step = "name"
             elif user_input in ["2", "vendor"]:
                 self.visitor_info.visitor_type = "vendor"
                 self.current_step = "supplier"
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                supplier_list = "\n".join(f"{idx}. {supplier}" for idx, supplier in enumerate(SUPPLIERS, 1))
+                ai_msg = await self.get_ai_response(user_input, context)
+                return f"{ai_msg or STEP_PROMPTS['vendor_supplier']}\n\n{supplier_list}"
             elif user_input in ["3", "prescheduled", "scheduled"]:
                 self.visitor_info.visitor_type = "prescheduled"
                 self.current_step = "scheduled_name"
-                return "Please enter your name."
             else:
-                # Repeat the visitor type selection message if invalid
-                return "Please select your visitor type: 1 for Guest, 2 for Vendor, 3 for Pre-scheduled Meeting."
+                # Return standard error message for invalid input
+                return get_error_message("visitor_type")
+                
+            # Update context with new step
             context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+            
             if self.current_step == "supplier":
-                # Always show supplier list immediately
+                # For supplier step, combine AI response with supplier list
                 supplier_list = "\n".join(f"{idx}. {supplier}" for idx, supplier in enumerate(SUPPLIERS, 1))
-                return f"Please select your supplier company:\n{supplier_list}"
+                ai_msg = await self.get_ai_response(user_input, context)
+                return f"{ai_msg}\n\n{supplier_list}"
+                
             return await self.get_ai_response(user_input, context)
 
         # Handle pre-scheduled meeting flow
         if self.visitor_info.visitor_type == "prescheduled":
             if self.current_step == "scheduled_name":
                 if not user_input.strip():
-                    return "Please enter your name."
+                    return get_error_message("empty")
+                if not validate_name(user_input.strip()):
+                    return get_error_message("name")
                 self.visitor_info.visitor_name = user_input.strip()
-                self.current_step = "scheduled_contact"
-                return "Please enter your phone number and email (separated by space)."
-            elif self.current_step == "scheduled_contact":
-                # First collect phone number
-                if not self.visitor_info.visitor_phone:
-                    if not validate_phone(user_input.strip()):
-                        return "Please enter a valid phone number."
-                    self.visitor_info.visitor_phone = user_input.strip()
-                    return "Please enter your email address."
-                # Then collect email
-                else:
-                    email = user_input.strip()
-                    if "@" not in email or "." not in email.split("@")[1]:
-                        return "Please enter a valid email address."
-                    self.visitor_info.visitor_email = email
-                    self.current_step = "scheduled_host"
-                    return "Please enter your host's name."
+                self.current_step = "scheduled_cnic"
+                return "Please provide your CNIC number in the format: 12345-1234567-1"
+            elif self.current_step == "scheduled_cnic":
+                if not validate_cnic(user_input.strip()):
+                    return get_error_message("cnic")
+                self.visitor_info.visitor_cnic = user_input.strip()
+                self.current_step = "scheduled_phone"
+                return "Please provide your contact number."
+            elif self.current_step == "scheduled_phone":
+                if not validate_phone(user_input.strip()):
+                    return get_error_message("phone")
+                self.visitor_info.visitor_phone = user_input.strip()
+                self.current_step = "scheduled_email"
+                return "Please enter your email address:"
+            elif self.current_step == "scheduled_email":
+                if not validate_email(user_input.strip()):
+                    return get_error_message("email")
+                self.visitor_info.visitor_email = user_input.strip()
+                self.current_step = "scheduled_host"
+                return "Please enter the name of the person you're scheduled to meet with:"
             elif self.current_step == "scheduled_host":
                 return await self.handle_scheduled_host_step(user_input)
             elif self.current_step == "scheduled_confirm":
-                if user_input.lower() == "confirm":
+                # Check if user chose to proceed as guest
+                if user_input == "1":
+                    # Convert to guest flow while keeping the visitor info
+                    self.visitor_info.visitor_type = "guest"
+                    self.current_step = "purpose"
+                    return "What is the purpose of your visit?"
+                elif user_input == "2":
+                    self.current_step = "scheduled_host"
+                    return "Please enter your host's name."
+                elif user_input.lower() == "confirm":
                     self.current_step = "complete"
-                    meeting = self.visitor_info.scheduled_meeting
-                    # Insert into DB
-                    scheduled_time = None
-                    start_time = meeting.get('original_event', {}).get('start', {}).get('dateTime')
-                    if start_time:
-                        scheduled_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
-                    
-                    insert_visitor_to_db(
-                        visitor_type="prescheduled",
-                        full_name=self.visitor_info.visitor_name,
-                        cnic="",  # Not required for pre-scheduled
-                        phone=self.visitor_info.visitor_phone,
-                        host=self.visitor_info.host_confirmed,
-                        purpose=meeting['purpose'],
-                        is_group_visit=False,
-                        email=self.visitor_info.visitor_email,
-                        scheduled_time=scheduled_time
-                    )
-                    # Notify host via Teams
-                    try:
-                        access_token = self.ai.get_system_account_token()
-                        host_user_id = self.ai.get_user_id(self.visitor_info.host_email, access_token)
-                        system_user_id = self.ai.get_user_id(self.ai._system_account_email, access_token)
-                        chat_id = self.ai.create_or_get_chat(host_user_id, system_user_id, access_token)
-                        message = f"""Your scheduled visitor has arrived:
+                    if self.visitor_info.scheduled_meeting:  # If there was a scheduled meeting
+                        meeting = self.visitor_info.scheduled_meeting
+                        # Insert into DB
+                        scheduled_time = None
+                        start_time = meeting.get('original_event', {}).get('start', {}).get('dateTime')
+                        if start_time:
+                            scheduled_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                        
+                        insert_visitor_to_db(
+                            visitor_type="prescheduled",
+                            full_name=self.visitor_info.visitor_name,
+                            cnic=self.visitor_info.visitor_cnic,
+                            phone=self.visitor_info.visitor_phone,
+                            host=self.visitor_info.host_confirmed,
+                            purpose=meeting['purpose'],
+                            is_group_visit=False,
+                            email=self.visitor_info.visitor_email,
+                            scheduled_time=scheduled_time
+                        )
+                        # Notify host via Teams
+                        try:
+                            access_token = self.ai.get_system_account_token()
+                            host_user_id = self.ai.get_user_id(self.visitor_info.host_email, access_token)
+                            system_user_id = self.ai.get_user_id(self.ai._system_account_email, access_token)
+                            chat_id = self.ai.create_or_get_chat(host_user_id, system_user_id, access_token)
+                            message = f"""Your scheduled visitor has arrived:
 Name: {self.visitor_info.visitor_name}
 Phone: {self.visitor_info.visitor_phone}
 Email: {self.visitor_info.visitor_email}
 Scheduled Time: {meeting['scheduled_time']}
 Purpose: {meeting['purpose']}"""
-                        self.ai.send_message_to_host(chat_id, access_token, message)
-                        print(f"Teams notification sent to {self.visitor_info.host_confirmed}")
-                    except Exception as e:
-                        print(f"Error in Teams notification process: {e}")
-                    return f"Welcome! Please take a seat. {self.visitor_info.host_confirmed} has been notified of your arrival."
+                            self.ai.send_message_to_host(chat_id, access_token, message)
+                            print(f"Teams notification sent to {self.visitor_info.host_confirmed}")
+                        except Exception as e:
+                            print(f"Error in Teams notification process: {e}")
+                        return f"Welcome! Please take a seat. {self.visitor_info.host_confirmed} has been notified of your arrival."
+                    else:
+                        # Handle guest flow confirmation
+                        insert_visitor_to_db(
+                            visitor_type="guest",
+                            full_name=self.visitor_info.visitor_name,
+                            cnic=self.visitor_info.visitor_cnic,
+                            phone=self.visitor_info.visitor_phone,
+                            host=self.visitor_info.host_confirmed,
+                            purpose=self.visitor_info.purpose,
+                            email=self.visitor_info.visitor_email
+                        )
+                        # Try to notify the host via Teams
+                        try:
+                            await self.ai.schedule_meeting(
+                                self.visitor_info.host_email,
+                                self.visitor_info.visitor_name,
+                                self.visitor_info.purpose
+                            )
+                        except Exception as e:
+                            print(f"Error scheduling meeting: {e}")
+                        return "Your registration is complete."
                 elif user_input.lower() == "back":
                     self.current_step = "scheduled_host"
-                    return "Please enter your host's name."
+                    return "Please enter the name of the person you're scheduled to meet with:"
                 else:
                     return "Please type 'confirm' to proceed or 'back' to re-enter the host name."
 
@@ -271,70 +327,114 @@ Purpose: {meeting['purpose']}"""
             steps = guest_flow["steps"]
             step_idx = steps.index(self.current_step) if self.current_step in steps else 0
             if self.current_step == "name":
+                context = {
+                    "current_step": self.current_step,
+                    **self.visitor_info.to_dict()
+                }
                 if not user_input.strip():
-                    return "Please enter your name."
+                    return get_error_message("empty")
+                if not validate_name(user_input.strip()):
+                    return get_error_message("name")
                 self.visitor_info.visitor_name = user_input.strip()
                 self.current_step = "group_size"
-                return "Please provide the size of your group."
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or "Please provide the size of your group."
             elif self.current_step == "group_size":
+                context = {
+                    "current_step": self.current_step,
+                    **self.visitor_info.to_dict()
+                }
                 try:
                     group_size = int(user_input.strip())
                     if group_size < 1:
-                        return "Please enter a valid group size (at least 1)."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "size_too_small"}) or "Please enter a valid group size (at least 1)."
                     if group_size > 10:
-                        return "Maximum group size is 10 people. Please enter a smaller number."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "size_too_large"}) or "Maximum group size is 10 people. Please enter a smaller number."
                     self.visitor_info.total_members = group_size
                     self.visitor_info.is_group_visit = group_size > 1
                     if group_size > 1:
                         self.visitor_info.group_id = str(datetime.now(timezone.utc).timestamp())
                     self.current_step = "cnic"
-                    return "Please provide your CNIC number in the format: 12345-1234567-1."
+                    context["current_step"] = self.current_step
+                    return await self.get_ai_response(user_input, context) or "Please provide your CNIC number in the format: 12345-1234567-1."
                 except ValueError:
                     return "Please enter a valid group size (number)."
             elif self.current_step == "cnic":
+                context = {
+                    "current_step": self.current_step,
+                    **self.visitor_info.to_dict()
+                }
                 if not validate_cnic(user_input.strip()):
-                    return "Please provide a valid CNIC number in the format: 12345-1234567-1."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_cnic"}) or "Please provide a valid CNIC number in the format: 12345-1234567-1."
                 self.visitor_info.visitor_cnic = user_input.strip()
                 self.current_step = "phone"
-                return "Please enter your phone number."
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or "Please enter your phone number."
             elif self.current_step == "phone":
+                context = {
+                    "current_step": self.current_step,
+                    **self.visitor_info.to_dict()
+                }
                 if not validate_phone(user_input.strip()):
-                    return "Please enter a valid phone number."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_phone"}) or "Please enter a valid phone number."
                 self.visitor_info.visitor_phone = user_input.strip()
+                
                 # If group, start collecting group member info
                 if self.visitor_info.is_group_visit and len(self.visitor_info.group_members) < self.visitor_info.total_members - 1:
                     next_member = len(self.visitor_info.group_members) + 2
                     self.current_step = f"member_{next_member}_name"
-                    return f"Please enter the name of group member {next_member}:"
+                    context["current_step"] = self.current_step
+                    context["next_member"] = next_member
+                    return await self.get_ai_response(user_input, context) or f"Please enter the name of group member {next_member}:"
+                
                 self.current_step = "host"
-                return "Who are you visiting?"
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or "Who are you visiting?"
             # Group member collection for guest
             elif self.current_step.startswith("member_"):
                 parts = self.current_step.split("_")
                 member_num = int(parts[1])
                 substep = parts[2]
+                context = {
+                    "current_step": self.current_step,
+                    "member_number": member_num,
+                    "substep": substep,
+                    **self.visitor_info.to_dict()
+                }
+                
                 if substep == "name":
                     self.visitor_info.group_members.append({"name": user_input.strip()})
                     self.current_step = f"member_{member_num}_cnic"
-                    return f"Please enter the CNIC number of group member {member_num} (format: 12345-1234567-1):"
+                    context["current_step"] = self.current_step
+                    return await self.get_ai_response(user_input, context) or f"Please enter the CNIC number of group member {member_num} (format: 12345-1234567-1):"
                 elif substep == "cnic":
                     if not validate_cnic(user_input.strip()):
-                        return f"Please provide a valid CNIC number for group member {member_num} in the format: 12345-1234567-1."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_cnic"}) or f"Please provide a valid CNIC number for group member {member_num} in the format: 12345-1234567-1."
                     self.visitor_info.group_members[member_num-2]["cnic"] = user_input.strip()
                     self.current_step = f"member_{member_num}_phone"
-                    return f"Please enter the phone number of group member {member_num}:"
+                    context["current_step"] = self.current_step
+                    return await self.get_ai_response(user_input, context) or f"Please enter the phone number of group member {member_num}:"
                 elif substep == "phone":
+                    context = {
+                        "current_step": self.current_step,
+                        "member_number": member_num,
+                        "substep": substep,
+                        **self.visitor_info.to_dict()
+                    }
                     if not validate_phone(user_input.strip()):
-                        return f"Please provide a valid phone number for group member {member_num}."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_phone"}) or f"Please provide a valid phone number for group member {member_num}."
                     self.visitor_info.group_members[member_num-2]["phone"] = user_input.strip()
                     # If more members to collect
                     if len(self.visitor_info.group_members) < self.visitor_info.total_members - 1:
                         next_member = len(self.visitor_info.group_members) + 2
                         self.current_step = f"member_{next_member}_name"
-                        return f"Please enter the name of group member {next_member}:"
+                        context["current_step"] = self.current_step
+                        context["next_member"] = next_member
+                        return await self.get_ai_response(user_input, context) or f"Please enter the name of group member {next_member}:"
                     else:
                         self.current_step = "host"
-                        return "Who are you visiting?"
+                        context["current_step"] = self.current_step
+                        return await self.get_ai_response(user_input, context) or "Who are you visiting?"
             elif self.current_step == "host":
                 if self.employee_selection_mode:
                     # Handle employee selection from the list
@@ -380,10 +480,15 @@ Purpose: {meeting['purpose']}"""
                     else:
                         return "No matches found. Please enter a different name."
             elif self.current_step == "purpose":
+                context = {
+                    "current_step": self.current_step,
+                    **self.visitor_info.to_dict()
+                }
                 if not user_input.strip():
-                    return "Please provide the purpose of your visit."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "empty_purpose"}) or "Please provide the purpose of your visit."
                 self.visitor_info.purpose = user_input.strip()
                 self.current_step = "confirm"
+                context["current_step"] = self.current_step
                 # Always show summary for confirmation
                 summary = f"Name: {self.visitor_info.visitor_name}\nCNIC: {self.visitor_info.visitor_cnic}\nPhone: {self.visitor_info.visitor_phone}"
                 if self.visitor_info.is_group_visit:
@@ -441,112 +546,155 @@ Purpose: {meeting['purpose']}"""
         # Vendor flow (strict, only hardcoded prompts, strict step order)
         if self.visitor_info.visitor_type == "vendor":
             if self.current_step == "supplier":
+                context = {
+                    "current_step": self.current_step,
+                    **self.visitor_info.to_dict()
+                }
                 supplier_list = "\n".join(f"{idx}. {supplier}" for idx, supplier in enumerate(SUPPLIERS, 1))
                 if user_input.isdigit() and 1 <= int(user_input) <= len(SUPPLIERS):
                     selected = SUPPLIERS[int(user_input) - 1]
                     if selected == "Other":
                         self.current_step = "supplier_other"
-                        return "Please enter your supplier company name."
+                        context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                        return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_supplier_other"]
                     else:
                         self.visitor_info.supplier = selected
                         self.current_step = "vendor_name"
-                        return "Please enter your name."
+                        context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                        return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_name"]
                 elif user_input.strip() in SUPPLIERS:
                     if user_input.strip() == "Other":
                         self.current_step = "supplier_other"
-                        return "Please enter your supplier company name."
+                        context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                        return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_supplier_other"]
                     else:
                         self.visitor_info.supplier = user_input.strip()
                         self.current_step = "vendor_name"
-                        return "Please enter your name."
+                        context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                        return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_name"]
                 else:
-                    return f"Please select your supplier company from the list below:\n{supplier_list}"
+                    ai_msg = await self.get_ai_response(user_input, {**context, "validation_error": "invalid_supplier"})
+                    return f"{ai_msg or STEP_PROMPTS['vendor_supplier']}\n{supplier_list}"
             elif self.current_step == "supplier_other":
-                if user_input.strip():
-                    self.visitor_info.supplier = user_input.strip()
-                    self.current_step = "vendor_name"
-                    return "Please enter your name."
-                else:
-                    return "Please enter your supplier company name."
-            elif self.current_step == "vendor_name":
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
                 if not user_input.strip():
-                    return "Please enter your name."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "empty"}) or get_error_message("empty")
+                self.visitor_info.supplier = user_input.strip()
+                self.current_step = "vendor_name"
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_name"]
+            elif self.current_step == "vendor_name":
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                if not user_input.strip():
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "empty"}) or get_error_message("empty")
+                if not validate_name(user_input.strip()):
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "name"}) or get_error_message("name")
                 self.visitor_info.visitor_name = user_input.strip()
                 self.current_step = "vendor_group_size"
-                return "Please provide the size of your group."
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_group_size"]
+                
             elif self.current_step == "vendor_group_size":
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
                 try:
                     group_size = int(user_input.strip())
                     if group_size < 1:
-                        return "Please enter a valid group size (at least 1)."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "size_too_small"}) or get_error_message("group_size")
                     if group_size > 10:
-                        return "Maximum group size is 10 people. Please enter a smaller number."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "size_too_large"}) or "Maximum group size is 10 people. Please enter a smaller number."
                     self.visitor_info.total_members = group_size
                     self.visitor_info.is_group_visit = group_size > 1
                     if group_size > 1:
                         self.visitor_info.group_id = str(datetime.now(timezone.utc).timestamp())
                     self.current_step = "vendor_cnic"
-                    return "Please provide your CNIC number in the format: 12345-1234567-1."
+                    context["current_step"] = self.current_step
+                    return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_cnic"]
                 except ValueError:
-                    return "Please enter a valid group size (number)."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_number"}) or get_error_message("group_size")
             elif self.current_step == "vendor_cnic":
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
                 if not validate_cnic(user_input.strip()):
-                    return "Please provide a valid CNIC number in the format: 12345-1234567-1."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "cnic"}) or get_error_message("cnic")
                 self.visitor_info.visitor_cnic = user_input.strip()
                 self.current_step = "vendor_phone"
-                return "Please enter your phone number."
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_phone"]
+                
             elif self.current_step == "vendor_phone":
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
                 if not validate_phone(user_input.strip()):
-                    return "Please provide a valid phone number."
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "phone"}) or get_error_message("phone")
                 self.visitor_info.visitor_phone = user_input.strip()
-                # If group, start collecting group member info
+                
+                # If group visit, start collecting member info
                 if self.visitor_info.is_group_visit and len(self.visitor_info.group_members) < self.visitor_info.total_members - 1:
                     next_member = len(self.visitor_info.group_members) + 2
                     self.current_step = f"vendor_member_{next_member}_name"
-                    return f"Please enter the name of vendor group member {next_member}:"
+                    context["current_step"] = self.current_step
+                    context["next_member"] = next_member
+                    return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_member_name"].replace("{number}", str(next_member))
+                
+                # Otherwise move to confirmation
                 self.current_step = "vendor_confirm"
-                # Show summary for confirmation
+                context["current_step"] = self.current_step
+                ai_msg = await self.get_ai_response(user_input, context)
                 summary = f"Supplier: {self.visitor_info.supplier}\nName: {self.visitor_info.visitor_name}\nCNIC: {self.visitor_info.visitor_cnic}\nPhone: {self.visitor_info.visitor_phone}"
                 if self.visitor_info.is_group_visit:
                     summary += f"\nGroup size: {self.visitor_info.total_members}"
                     for idx, member in enumerate(self.visitor_info.group_members, 2):
                         summary += f"\nMember {idx}: {member.get('name','')} / {member.get('cnic','')} / {member.get('phone','')}"
-                return f"Please review your information and type 'yes' to confirm or 'no' to edit.\n{summary}"
+                return f"{ai_msg or STEP_PROMPTS['vendor_confirm']}\n{summary}"
             # Group member collection for vendor
             elif self.current_step.startswith("vendor_member_"):
                 parts = self.current_step.split("_")
                 member_num = int(parts[2])
                 substep = parts[3]
+                context = {
+                    "current_step": self.current_step, 
+                    "member_number": member_num,
+                    **self.visitor_info.to_dict()
+                }
+                
                 if substep == "name":
+                    if not validate_name(user_input.strip()):
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "name"}) or get_error_message("name")
                     self.visitor_info.group_members.append({"name": user_input.strip()})
                     self.current_step = f"vendor_member_{member_num}_cnic"
-                    return f"Please enter the CNIC number of vendor group member {member_num} (format: 12345-1234567-1):"
+                    context["current_step"] = self.current_step 
+                    return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_member_cnic"].replace("{number}", str(member_num))
                 elif substep == "cnic":
                     if not validate_cnic(user_input.strip()):
-                        return f"Please provide a valid CNIC number for vendor group member {member_num} in the format: 12345-1234567-1."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "cnic"}) or get_error_message("cnic")
                     self.visitor_info.group_members[member_num-2]["cnic"] = user_input.strip()
                     self.current_step = f"vendor_member_{member_num}_phone"
-                    return f"Please enter the phone number of vendor group member {member_num}:"
+                    context["current_step"] = self.current_step
+                    return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_member_phone"].replace("{number}", str(member_num))
                 elif substep == "phone":
                     if not validate_phone(user_input.strip()):
-                        return f"Please provide a valid phone number for vendor group member {member_num}."
+                        return await self.get_ai_response(user_input, {**context, "validation_error": "phone"}) or get_error_message("phone")
                     self.visitor_info.group_members[member_num-2]["phone"] = user_input.strip()
-                    # If more members to collect
                     if len(self.visitor_info.group_members) < self.visitor_info.total_members - 1:
                         next_member = len(self.visitor_info.group_members) + 2
                         self.current_step = f"vendor_member_{next_member}_name"
-                        return f"Please enter the name of vendor group member {next_member}:"
+                        context["current_step"] = self.current_step
+                        return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_member_name"].replace("{number}", str(next_member))
                     else:
-                        self.current_step = "vendor_confirm"
+                        self.current_step = "vendor_confirm" 
+                        context["current_step"] = self.current_step
                         summary = f"Supplier: {self.visitor_info.supplier}\nName: {self.visitor_info.visitor_name}\nCNIC: {self.visitor_info.visitor_cnic}\nPhone: {self.visitor_info.visitor_phone}"
                         if self.visitor_info.is_group_visit:
                             summary += f"\nGroup size: {self.visitor_info.total_members}"
                             for idx, member in enumerate(self.visitor_info.group_members, 2):
                                 summary += f"\nMember {idx}: {member.get('name','')} / {member.get('cnic','')} / {member.get('phone','')}"
-                        return f"Please review your information and type 'yes' to confirm or 'no' to edit.\n{summary}"
+                        ai_msg = await self.get_ai_response(user_input, context)
+                        return f"{ai_msg or STEP_PROMPTS['vendor_confirm']}\n{summary}"
             elif self.current_step == "vendor_confirm":
-                if user_input.lower() == "yes":
+                context = {"current_step": self.current_step, **self.visitor_info.to_dict()}
+                if user_input.lower() in ["yes", "confirm"]:
                     self.current_step = "complete"
+                    context["current_step"] = self.current_step
+                    
+                    # Save to database
                     insert_visitor_to_db(
                         visitor_type="vendor",
                         full_name=self.visitor_info.visitor_name or "",
@@ -558,6 +706,8 @@ Purpose: {meeting['purpose']}"""
                         group_members=self.visitor_info.group_members,
                         total_members=self.visitor_info.total_members
                     )
+                    
+                    # Try to notify admin
                     try:
                         if self.ai.graph_client is not None:
                             access_token = self.ai.get_system_account_token()
@@ -572,13 +722,23 @@ Purpose: {meeting['purpose']}"""
                             self.ai.send_message_to_host(chat_id, access_token, message)
                     except Exception as e:
                         print(f"Error in Teams notification process: {e}")
-                    return "Your registration is complete."
-                elif user_input.lower() == "no":
+                    
+                    return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_notify"]
+                    
+                elif user_input.lower() == "edit":
                     self.current_step = "supplier"
+                    context["current_step"] = self.current_step
+                    ai_msg = await self.get_ai_response(user_input, context)
                     supplier_list = "\n".join(f"{idx}. {supplier}" for idx, supplier in enumerate(SUPPLIERS, 1))
-                    return f"Please select your supplier company:\n{supplier_list}"
+                    return f"{ai_msg or STEP_PROMPTS['vendor_supplier']}\n{supplier_list}"
                 else:
-                    return "Please type 'yes' to confirm or 'no' to edit."
+                    # Show summary again
+                    summary = f"Supplier: {self.visitor_info.supplier}\nName: {self.visitor_info.visitor_name}\nCNIC: {self.visitor_info.visitor_cnic}\nPhone: {self.visitor_info.visitor_phone}"
+                    if self.visitor_info.is_group_visit:
+                        summary += f"\nGroup size: {self.visitor_info.total_members}"
+                        for idx, member in enumerate(self.visitor_info.group_members, 2):
+                            summary += f"\nMember {idx}: {member.get('name','')} / {member.get('cnic','')} / {member.get('phone','')}"
+                    return f"{STEP_PROMPTS['vendor_confirm']}\n{summary}"
             elif self.current_step == "complete":
                 return "Your registration is complete."
 
@@ -632,29 +792,72 @@ Purpose: {meeting['purpose']}"""
                 self.employee_selection_mode = False
                 self.employee_matches = []
                 
-                # Check for scheduled meetings
+                # Check for scheduled meetings - ensure timezone-aware datetime
+                current_time = datetime.now(timezone.utc)
                 meetings = await self.ai.get_scheduled_meetings(
                     self.visitor_info.host_email,
                     self.visitor_info.visitor_name,
-                    datetime.now(timezone.utc)
+                    current_time
                 )
                 
-                if not meetings:
-                    return "No scheduled meetings found with this host for today. Please confirm:\n1. You're here for a pre-scheduled meeting\n2. The host name is correct\n3. Your name matches the calendar entry\n\nType 'back' to re-enter the host name or 'confirm' to proceed anyway."
+                # First verify if visitor email matches any meeting attendees
+                matched_meetings = []
+                if meetings:
+                    for meeting in meetings:
+                        attendees = meeting['original_event'].get('attendees', [])
+                        for attendee in attendees:
+                            email = attendee.get('emailAddress', {}).get('address', '')
+                            if email == self.visitor_info.visitor_email:
+                                matched_meetings.append(meeting)
+                                break
                 
-                # Found scheduled meetings
-                self.visitor_info.scheduled_meeting = meetings[0]  # Take the first matching meeting
+                if not matched_meetings:
+                    self.current_step = "scheduled_confirm"
+                    return "No scheduled meetings found with your email address. Would you like to check in as a guest instead?\n1. Yes, check in as guest\n2. No, re-enter host name\n\nType '1' or '2' to proceed."
+                
+                # Found matching scheduled meetings
+                self.visitor_info.scheduled_meeting = matched_meetings[0]  # Take the first matching meeting
                 self.current_step = "scheduled_confirm"
+                
+                # Get the start and end time from original event
+                event = matched_meetings[0]['original_event']
+                start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
+                end_time = datetime.fromisoformat(event['end']['dateTime'].replace('Z', '+00:00'))
+                
+                # Convert to Pakistan time (+5)
+                pk_start = start_time + timedelta(hours=5)
+                pk_end = end_time + timedelta(hours=5)
                 
                 meeting_info = (
                     f"Found your scheduled meeting:\n"
-                    f"Time: {meetings[0]['scheduled_time']}\n"
-                    f"Purpose: {meetings[0]['purpose']}\n\n"
+                    f"Time: {pk_start.strftime('%I:%M %p')} - {pk_end.strftime('%I:%M %p')}\n"
+                    f"Purpose: {matched_meetings[0]['purpose']}\n\n"
                     f"Type 'confirm' to proceed or 'back' to re-enter the host name."
                 )
                 return meeting_info
+            elif user_input == "0":
+                # User wants to search for a different name
+                self.employee_selection_mode = False
+                self.employee_matches = []
+                return "Please enter a different name."
             else:
-                return "Please select a valid host from the list by number, or enter 0 to search for a different name."
+                # Invalid selection, show options again
+                options = "Please select a valid number:\n"
+                for i, emp in enumerate(self.employee_matches, 1):
+                    dept = emp.get("department", "Unknown Department")
+                    options += f"  {i}. {emp['displayName']} ({dept})\n"
+                options += "  0. None of these / Enter a different name"
+                return options
+
+        # Check if user chose to proceed as guest
+        if user_input == "1" and self.current_step == "scheduled_confirm":
+            # Convert to guest flow
+            self.visitor_info.visitor_type = "guest"
+            self.current_step = "purpose"
+            return "What is the purpose of your visit?"
+        elif user_input == "2" and self.current_step == "scheduled_confirm":
+            self.current_step = "scheduled_host"
+            return "Please enter your host's name."
 
         # Not in selection mode - search for the host
         employee = await self.ai.search_employee(user_input)
@@ -662,28 +865,49 @@ Purpose: {meeting['purpose']}"""
             self.visitor_info.host_confirmed = employee["displayName"]
             self.visitor_info.host_email = employee["email"]
             
-            # Check for scheduled meetings
+            # Check for scheduled meetings - ensure timezone-aware datetime
+            current_time = datetime.now(timezone.utc)
             meetings = await self.ai.get_scheduled_meetings(
                 self.visitor_info.host_email,
                 self.visitor_info.visitor_name,
-                datetime.now(timezone.utc)
+                current_time
             )
             
-            if not meetings:
-                return "No scheduled meetings found with this host for today. Please confirm:\n1. You're here for a pre-scheduled meeting\n2. The host name is correct\n3. Your name matches the calendar entry\n\nType 'back' to re-enter the host name or 'confirm' to proceed anyway."
+            # First verify if visitor email matches any meeting attendees
+            matched_meetings = []
+            if meetings:
+                for meeting in meetings:
+                    attendees = meeting['original_event'].get('attendees', [])
+                    for attendee in attendees:
+                        email = attendee.get('emailAddress', {}).get('address', '')
+                        if email == self.visitor_info.visitor_email:
+                            matched_meetings.append(meeting)
+                            break
             
-            # Found scheduled meetings
-            self.visitor_info.scheduled_meeting = meetings[0]  # Take the first matching meeting
+            if not matched_meetings:
+                self.current_step = "scheduled_confirm"
+                return "No scheduled meetings found with your email address. Would you like to check in as a guest instead?\n1. Yes, check in as guest\n2. No, re-enter host name\n\nType '1' or '2' to proceed."
+            
+            # Found matching scheduled meetings
+            self.visitor_info.scheduled_meeting = matched_meetings[0]  # Take the first matching meeting
             self.current_step = "scheduled_confirm"
+            
+            # Get the start and end time from original event
+            event = matched_meetings[0]['original_event']
+            start_time = datetime.fromisoformat(event['start']['dateTime'].replace('Z', '+00:00'))
+            end_time = datetime.fromisoformat(event['end']['dateTime'].replace('Z', '+00:00'))
+            
+            # Convert to Pakistan time (+5)
+            pk_start = start_time + timedelta(hours=5)
+            pk_end = end_time + timedelta(hours=5)
             
             meeting_info = (
                 f"Found your scheduled meeting:\n"
-                f"Time: {meetings[0]['scheduled_time']}\n"
-                f"Purpose: {meetings[0]['purpose']}\n\n"
+                f"Time: {pk_start.strftime('%I:%M %p')} - {pk_end.strftime('%I:%M %p')}\n"
+                f"Purpose: {matched_meetings[0]['purpose']}\n\n"
                 f"Type 'confirm' to proceed or 'back' to re-enter the host name."
             )
             return meeting_info
-            
         elif isinstance(employee, list):
             self.employee_selection_mode = True
             self.employee_matches = employee

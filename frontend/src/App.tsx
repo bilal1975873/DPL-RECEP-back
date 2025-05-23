@@ -2,19 +2,13 @@ import { useState } from 'react';
 import { ChatContainer } from './components/ChatContainer';
 import { visitorService } from './services/api';
 import type { ChatState } from './types';
-import logo from './assets/react.svg';
-
-const fallbackLogo = (
-  <div className="h-10 w-10 rounded-full bg-primary-100 flex items-center justify-center shadow">
-    <span className="text-primary-700 font-bold text-lg">DPL</span>
-  </div>
-);
+import dplLogo from '../DPL_LOGO_tagline.png';
 
 const INITIAL_STATE: ChatState = {
   messages: [
     {
       type: 'bot',
-      content: 'Welcome to DPL! I am your AI receptionist. Please select your visitor type:',
+      content: 'Welcome to DPL! I am your AI receptionist. Please select your visitor type:\n\n1. I am here as a guest\n2. I am a vendor\n3. I am here for a pre-scheduled meeting',
       timestamp: new Date(),
     },
   ],
@@ -65,7 +59,7 @@ function App() {
             { type: 'bot', content: response, timestamp: new Date() },
             { 
               type: 'bot', 
-              content: 'Click anywhere to start a new registration.', 
+              content: 'Type ok to start a new registration.', 
               timestamp: new Date() 
             },
           ],
@@ -104,52 +98,41 @@ function App() {
     }
   };
 
-  const handleVisitorType = (type: string) => {
-    handleSend(type);
-  };
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-900 via-primary-700 to-black flex items-center justify-center p-4 relative">
-      <div className="absolute inset-0 bg-white/10 backdrop-blur-sm z-0" />
-      <div className="w-full max-w-2xl bg-white/90 rounded-3xl shadow-2xl overflow-hidden z-10 border border-primary-100">
-        <div className="flex items-center gap-3 bg-primary-900 p-4">
-          {logo ? (
-            <img src={logo} alt="DPL Logo" className="h-10 w-10 rounded-full bg-white p-1 shadow" />
-          ) : fallbackLogo}
-          <h1 className="text-white text-2xl font-bold text-center flex-1">DPL AI Receptionist</h1>
-        </div>
-        <div className="p-6">
-          {state.currentStep === 'visitor_type' && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-              <button
-                onClick={() => handleVisitorType('guest')}
-                className="btn-primary text-lg py-3"
-              >
-                I am a Guest
-              </button>
-              <button
-                onClick={() => handleVisitorType('vendor')}
-                className="btn-primary text-lg py-3"
-              >
-                I am a Vendor
-              </button>
-              <button
-                onClick={() => handleVisitorType('3')}
-                className="btn-primary text-lg py-3"
-              >
-                Pre-scheduled Meeting
-              </button>
-            </div>
-          )}
-          <div className="space-y-4">
-            <ChatContainer
-              messages={state.messages}
-              onSend={handleSend}
-              isLoading={state.isLoading}
-            />
-          </div>
-        </div>
+    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden">
+      {/* Background grid animation */}
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute inset-0 bg-grid transform -skew-y-12"></div>
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-red-900/5 to-black"></div>
       </div>
+
+      {/* Side decorative elements */}
+      <div className="fixed top-0 right-0 w-1/3 h-screen bg-gradient-to-l from-red-900/10 to-transparent pointer-events-none"></div>
+      <div className="fixed top-0 left-0 w-1/3 h-screen bg-gradient-to-r from-red-900/10 to-transparent pointer-events-none"></div>
+
+      {/* Main content */}
+      <div className="relative z-10 container mx-auto px-4 min-h-screen flex flex-col">
+        {/* Logo */}
+        <div className="flex justify-center mb-8 pt-8">
+          <img src={dplLogo} alt="DPL Logo" className="h-16 md:h-20" />
+        </div>
+
+        {/* Chat interface */}
+        <div className="flex-1 flex flex-col">
+          <ChatContainer
+            messages={state.messages}
+            isLoading={state.isLoading}
+            onSend={handleSend}
+          />
+        </div>
+
+        {/* Footer bar */}
+        <div className="h-1 w-full bg-gradient-to-r from-red-900/20 via-red-600/40 to-red-900/20 fixed bottom-0 left-0"></div>
+      </div>
+
+      {/* Corner accents */}
+      <div className="fixed top-0 right-0 w-32 h-32 bg-gradient-to-bl from-red-500/10 to-transparent"></div>
+      <div className="fixed top-0 left-0 w-32 h-32 bg-gradient-to-br from-red-500/10 to-transparent"></div>
     </div>
   );
 }
