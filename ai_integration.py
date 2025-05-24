@@ -56,7 +56,22 @@ class AIReceptionist:
                 client_secret=CLIENT_SECRET
             )
             
-            return GraphServiceClient(credential)
+            scopes = ['https://graph.microsoft.com/.default']
+            app = PublicClientApplication(CLIENT_ID, authority=f"https://login.microsoftonline.com/{TENANT_ID}")
+            result = app.acquire_token_silent(scopes, account=None)
+            
+            if not result:
+                result = app.acquire_token_by_username_password(
+                    self._system_account_email,
+                    CLIENT_SECRET,
+                    scopes=scopes
+                )
+            
+            if 'access_token' not in result:
+                print("Error: Failed to acquire token")
+                return None
+            
+            return GraphServiceClient(credentials=credential, scopes=scopes)
                 
             print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
