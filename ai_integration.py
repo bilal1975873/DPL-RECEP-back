@@ -61,21 +61,31 @@ class AIReceptionist:
                 authority=authority
             )
             
-            result = app.acquire_token_silent(scopes, account=None)
-            if not result:
-                result = app.acquire_token_for_client(scopes=scopes)
+            result = app.acquire_token_for_client(scopes=scopes)
                 
             if not result or 'access_token' not in result:
                 print("Error: Failed to acquire token")
                 return None
-                
-            credential = ClientSecretCredential(
-                tenant_id=TENANT_ID,
-                client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET
+
+            # Create the Graph client using the token directly
+            from msgraph.generated.models.o_data_error import ODataError
+            from kiota_http.middleware.options import RequestOption
+            from azure.identity import AzureAuthorityHosts
+            from msgraph.core import GraphClientFactory, AuthenticationProvider
+
+            class TokenCredential(AuthenticationProvider):
+                def __init__(self, token):
+                    self.token = token
+
+                async def get_token(self):
+                    return self.token
+
+            client = GraphClientFactory.create_with_auth_provider(
+                TokenCredential(result['access_token'])
             )
 
-            return GraphServiceClient(credential)
+            print("Successfully initialized Microsoft Graph client")
+            return client
                 
             print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
