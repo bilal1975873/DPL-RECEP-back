@@ -49,6 +49,14 @@ class AIReceptionist:
             if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
                 print("Error: Missing required Azure AD credentials in environment variables")
                 return None
+            
+            credential = ClientSecretCredential(
+                tenant_id=TENANT_ID,
+                client_id=CLIENT_ID,
+                client_secret=CLIENT_SECRET
+            )
+            
+            return GraphServiceClient(credential)
                 
             print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
