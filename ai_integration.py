@@ -49,29 +49,33 @@ class AIReceptionist:
             if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
                 print("Error: Missing required Azure AD credentials in environment variables")
                 return None
+
+            print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
+            scopes = ['https://graph.microsoft.com/.default']
+            authority = f"https://login.microsoftonline.com/{TENANT_ID}"
+            
+            app = msal.ConfidentialClientApplication(
+                client_id=CLIENT_ID,
+                client_credential=CLIENT_SECRET,
+                authority=authority
+            )
+            
+            result = app.acquire_token_silent(scopes, account=None)
+            if not result:
+                result = app.acquire_token_for_client(scopes=scopes)
+                
+            if not result or 'access_token' not in result:
+                print("Error: Failed to acquire token")
+                return None
+                
             credential = ClientSecretCredential(
                 tenant_id=TENANT_ID,
                 client_id=CLIENT_ID,
                 client_secret=CLIENT_SECRET
             )
-            
-            scopes = ['https://graph.microsoft.com/.default']
-            app = PublicClientApplication(CLIENT_ID, authority=f"https://login.microsoftonline.com/{TENANT_ID}")
-            result = app.acquire_token_silent(scopes, account=None)
-            
-            if not result:
-                result = app.acquire_token_by_username_password(
-                    self._system_account_email,
-                    CLIENT_SECRET,
-                    scopes=scopes
-                )
-            
-            if 'access_token' not in result:
-                print("Error: Failed to acquire token")
-                return None
-            
-            return GraphServiceClient(credentials=credential, scopes=scopes)
+
+            return GraphServiceClient(credential)
                 
             print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
