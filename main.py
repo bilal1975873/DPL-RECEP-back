@@ -1030,5 +1030,6 @@ async def process_message(request: MessageRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    receptionist = DPLReceptionist()
-    asyncio.run(receptionist.run())
+    import uvicorn
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
