@@ -1,6 +1,5 @@
 rapidfuzz==3.13.0
 msal==1.25.0
-msgraph-core==1.0.0
 azure-identity==1.15.0
 msgraph-sdk==1.0.0
 python-dotenv==1.0.0
