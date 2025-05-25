@@ -3,6 +3,7 @@ import json
 import requests
 import asyncio
 import boto3
+from graph_client import create_graph_client
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta, timezone
@@ -10,14 +11,16 @@ import msal
 from msal import PublicClientApplication
 from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
-from msgraph.generated.models.event import Event
-from msgraph.generated.models.item_body import ItemBody
-from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.attendee import Attendee
+from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.location import Location
-from msgraph.generated.models.attendee_base import AttendeeBase as AttendeeType
-from msgraph.generated.models.location_type import LocationType
+from msgraph.generated.models.event import Event
+from msgraph.generated.models.item_body import ItemBody
+from msgraph.core import GraphClientFactory
+from msgraph.core.client import GraphClient
+from msgraph.core.requests.base_request_builder import BaseRequestBuilder
+from azure.core.credentials import TokenCredential
 from fuzzywuzzy import fuzz
 from dotenv import load_dotenv
 from prompts import SYSTEM_PERSONALITY, STEP_PROMPTS, RESPONSE_TEMPLATES, FLOW_CONSTRAINTS
@@ -52,59 +55,33 @@ class AIReceptionist:
 
             print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
-            scopes = ['https://graph.microsoft.com/.default']
-            authority = f"https://login.microsoftonline.com/{TENANT_ID}"
-            
-            app = msal.ConfidentialClientApplication(
-                client_id=CLIENT_ID,
-                client_credential=CLIENT_SECRET,
-                authority=authority
-            )
-            
-            result = app.acquire_token_for_client(scopes=scopes)
+            try:
+                # Create credential object
+                credential = ClientSecretCredential(
+                    tenant_id=TENANT_ID,
+                    client_id=CLIENT_ID,
+                    client_secret=CLIENT_SECRET
+                )
                 
-            if not result or 'access_token' not in result:
-                print("Error: Failed to acquire token")
+                # Define scopes for application permissions
+                scopes = ['https://graph.microsoft.com/.default']
+                
+                # Create Graph client with scopes
+                graph_client = GraphServiceClient(credentials=credential, scopes=scopes)
+                
+                # Test that the client works
+                try:
+                    users = graph_client.users.get()
+                    print("Successfully initialized Microsoft Graph client")
+                    return graph_client
+                except Exception as e:
+                    print(f"Error testing Graph client: {e}")
+                    return None
+                    
+            except Exception as e:
+                print(f"Error creating Graph client: {e}")
                 return None
-
-            # Create the Graph client using the token directly
-            from msgraph.generated.models.o_data_error import ODataError
-            from kiota_http.middleware.options import RequestOption
-            from azure.identity import AzureAuthorityHosts
-            from msgraph.core import GraphClientFactory, AuthenticationProvider
-
-            class TokenCredential(AuthenticationProvider):
-                def __init__(self, token):
-                    self.token = token
-
-                async def get_token(self):
-                    return self.token
-
-            client = GraphClientFactory.create_with_auth_provider(
-                TokenCredential(result['access_token'])
-            )
-
-            print("Successfully initialized Microsoft Graph client")
-            return client
-                
-            print(f"Initializing Graph client with admin account: {self._system_account_email}")
             
-            credential = ClientSecretCredential(
-                tenant_id=TENANT_ID,
-                client_id=CLIENT_ID,
-                client_secret=CLIENT_SECRET
-            )
-            
-            # Using .default scope which includes all application permissions granted to the app
-            scopes = ['https://graph.microsoft.com/.default']
-            
-            client = GraphServiceClient(
-                credentials=credential,
-                scopes=scopes
-            )
-            
-            print("Successfully connected to Microsoft Graph API with application permissions")
-            return client
         except Exception as e:
             print(f"Error initializing Graph client: {e}")
             return None
