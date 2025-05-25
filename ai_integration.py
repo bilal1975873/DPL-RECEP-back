@@ -17,9 +17,6 @@ from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.location import Location
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.item_body import ItemBody
-from msgraph.core import GraphClientFactory
-from msgraph.core.client import GraphClient
-from msgraph.core.requests.base_request_builder import BaseRequestBuilder
 from azure.core.credentials import TokenCredential
 from fuzzywuzzy import fuzz
 from dotenv import load_dotenv
