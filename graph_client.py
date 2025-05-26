@@ -32,17 +32,20 @@ def create_graph_client(access_token: str) -> Optional[GraphServiceClient]:
         # Create credential from access token
         credential = GraphTokenCredential(access_token)
         
-        # Create Graph client with delegated scopes
-        scopes = [
-            'Chat.ReadWrite',
-            'ChatMessage.Send',
-            'User.Read.All',
-            'Calendars.ReadWrite'
-        ]
+        # For delegated permissions, we don't need to specify scopes when creating the client
+        # The scopes were already specified when getting the token
+        client = GraphServiceClient(credentials=credential)
         
-        client = GraphServiceClient(credentials=credential, scopes=scopes)
-        print("[DEBUG] Successfully created Graph client with delegated permissions")
-        return client
+        # Test the client
+        try:
+            # Make a simple test request
+            print("[DEBUG] Testing Graph client connection...")
+            test = client.users.get()
+            print("[DEBUG] Successfully created and tested Graph client with delegated permissions")
+            return client
+        except Exception as e:
+            print(f"[ERROR] Graph client test failed: {str(e)}")
+            return None
             
     except Exception as e:
         print(f"[ERROR] Failed to create Graph client: {str(e)}")
