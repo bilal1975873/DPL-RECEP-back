@@ -20,7 +20,11 @@ class GraphTokenCredential(TokenCredential):
 
     def get_token(self, *scopes, **kwargs):
         """Returns the access token for the specified scope."""
-        return self.access_token
+        from azure.core.credentials import AccessToken
+        import time
+        # Create an AccessToken object with the token and an expiration time
+        # We'll set expiration to 1 hour from now since we can't know the actual expiration
+        return AccessToken(self.access_token, int(time.time()) + 3600)
 
 def create_graph_client(access_token: str) -> Optional[GraphServiceClient]:
     """Create a Microsoft Graph client with delegated permissions using an access token."""
