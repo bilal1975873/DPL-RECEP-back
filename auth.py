@@ -9,7 +9,7 @@ from jose import JWTError, jwt
 # Load environment variables
 config = Config(".env")
 
-# OAuth2 configuration
+# OAuth2 configuration for user login
 oauth = OAuth()
 oauth.register(
     name='azure',
@@ -17,7 +17,7 @@ oauth.register(
     client_secret=os.getenv("CLIENT_SECRET"),
     server_metadata_url=f'https://login.microsoftonline.com/{os.getenv("TENANT_ID")}/v2.0/.well-known/openid-configuration',
     client_kwargs={
-        'scope': 'https://graph.microsoft.com/.default offline_access openid profile email User.Read Chat.ReadWrite Chat.Create Calendars.ReadWrite'
+        'scope': 'openid profile email User.Read'  # Only basic user profile access needed for login
     }
 )
 
