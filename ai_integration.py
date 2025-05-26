@@ -450,8 +450,7 @@ User message: {user_input}
         
         app = PublicClientApplication(
             CLIENT_ID,
-            authority=AUTHORITY,
-            redirect_uri=REDIRECT_URI  # Add redirect URI here
+            authority=AUTHORITY
         )
         accounts = app.get_accounts(username=self._system_account_email)
         result = None
@@ -468,7 +467,7 @@ User message: {user_input}
                 result = app.acquire_token_interactive(
                     scopes=SCOPES,
                     login_hint=self._system_account_email,
-                    redirect_uri=REDIRECT_URI  # Also specify redirect URI here
+                    redirect_uri=REDIRECT_URI
                 )
             except Exception as e:
                 print(f"Error acquiring interactive token: {e}")
