@@ -1,53 +1,84 @@
-from typing import Optional
-import json
+"""Microsoft Graph API client for DPL Receptionist."""
+from typing import Optional, List, Dict, Any
 from msgraph import GraphServiceClient
-from msgraph.generated.models.email_address import EmailAddress
-from msgraph.generated.models.attendee import Attendee
-from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
-from msgraph.generated.models.location import Location
-from msgraph.generated.models.event import Event
-from msgraph.generated.models.item_body import ItemBody
-from msgraph.generated.models.chat_message import ChatMessage
-from msgraph.generated.models.chat import Chat
-from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember
-from azure.core.credentials import TokenCredential
-from azure.identity import OnBehalfOfCredential
+from azure.identity import ClientSecretCredential
+import asyncio
+import logging
 
-class GraphTokenCredential(TokenCredential):
-    """TokenCredential implementation for access token authentication."""
-    def __init__(self, access_token: str):
-        self.access_token = access_token
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-    def get_token(self, *scopes, **kwargs):
-        """Returns the access token for the specified scope."""
-        from azure.core.credentials import AccessToken
-        import time
-        # Create an AccessToken object with the token and an expiration time
-        # We'll set expiration to 1 hour from now since we can't know the actual expiration
-        return AccessToken(self.access_token, int(time.time()) + 3600)
-
-def create_graph_client(access_token: str) -> Optional[GraphServiceClient]:
-    """Create a Microsoft Graph client with application permissions using an access token."""
+def create_graph_client(tenant_id: str, client_id: str, client_secret: str) -> Optional[GraphServiceClient]:
+    """Initialize Microsoft Graph client with application permissions."""
     try:
-        # Create credential from access token
-        credential = GraphTokenCredential(access_token)
+        # Create credential object
+        credential = ClientSecretCredential(
+            tenant_id=tenant_id,
+            client_id=client_id,
+            client_secret=client_secret
+        )
         
-        # Create client with application permissions
-        client = GraphServiceClient(credentials=credential)
+        # Create Graph client with appropriate scopes
+        scopes = ["https://graph.microsoft.com/.default"]
+        client = GraphServiceClient(credentials=credential, scopes=scopes)
         
-        # Test the client by looking up the system admin account
-        try:
-            print("[DEBUG] Testing Graph client connection...")
-            test = client.users.get()
-            if test:
-                print("[DEBUG] Successfully created and tested Graph client with application permissions")
-                return client
-            else:
-                print("[ERROR] Could not verify Graph client connection")
-                return None
-        except Exception as e:
-            print(f"[ERROR] Graph client test failed: {str(e)}")
+        logger.info("Successfully created Graph client")
+        return client
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize Graph client: {str(e)}")
+        return None
+
+async def search_users(client: GraphServiceClient, search_term: str) -> Optional[List[Dict[str, Any]]]:
+    """Search for users in the organization using Microsoft Graph API."""
+    try:
+        logger.info(f"Searching users with term: {search_term}")
+        
+        # Build the request with proper parameters
+        filter_query = f"startswith(displayName,'{search_term}') or startswith(mail,'{search_term}')"
+        select = ["id", "displayName", "mail", "jobTitle", "department"]
+        
+        # Make the request
+        response = await client.users.get()
+        
+        if not response or not hasattr(response, 'value'):
+            logger.warning("No users found or unexpected response format")
             return None
+            
+        users = response.value
+        logger.info(f"Successfully retrieved {len(users)} users")
+        
+        # Filter results on the client side since $filter isn't working
+        filtered_users = [
+            user for user in users 
+            if search_term.lower() in (getattr(user, 'display_name', '').lower() or '') or 
+               search_term.lower() in (getattr(user, 'mail', '').lower() or '')
+        ]
+        
+        return filtered_users
+        
+    except Exception as e:
+        logger.error(f"Failed to search users: {str(e)}")
+        return None
+
+async def get_users(client: GraphServiceClient) -> Optional[List[Dict[str, Any]]]:
+    """Get all users from Microsoft Graph API."""
+    try:
+        logger.info("Getting all users from Graph API")
+        response = await client.users.get()
+        
+        if not response or not hasattr(response, 'value'):
+            logger.warning("No users found or unexpected response format")
+            return None
+            
+        users = response.value
+        logger.info(f"Successfully retrieved {len(users)} users")
+        return users
+        
+    except Exception as e:
+        logger.error(f"Failed to get users: {str(e)}")
+        return None
             
     except Exception as e:
         print(f"[ERROR] Failed to create Graph client: {str(e)}")
