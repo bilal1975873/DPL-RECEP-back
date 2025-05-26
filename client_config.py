@@ -11,19 +11,17 @@ REQUIRED_PERMISSIONS = [
 
 class ClientConfig:
     """Handles Microsoft Graph API authentication with application permissions."""
-    
     def __init__(self, tenant_id: str, client_id: str, client_secret: str):
         self.tenant_id = tenant_id
         self.client_id = client_id
         self.client_secret = client_secret
         self._token = None
-        self._scope = None
     
-        def get_token(self, scope: Optional[str] = None) -> str:
-            """
-            Get an access token for Microsoft Graph API with application permissions.
-            The token will have all required permissions for Teams message sending.
-            """
+    def get_token(self, scope: Optional[str] = None) -> str:
+        """
+        Get an access token for Microsoft Graph API with application permissions.
+        The token will have all required permissions for Teams message sending.
+        """
         try:
             if not self._token:
                 print("[INFO] Getting new access token with application permissions")
