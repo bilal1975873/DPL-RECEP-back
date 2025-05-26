@@ -1,3 +1,4 @@
+from azure.identity import ClientSecretCredential
 import os
 import json
 import asyncio
@@ -48,40 +49,46 @@ class AIReceptionist:
         """Initialize the Microsoft Graph client with application permissions."""
         try:
             if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
-                print("Error: Missing required Azure AD credentials in environment variables")
+                print("[ERROR] Missing required Azure AD credentials in environment variables")
                 return None
 
-            print(f"Initializing Graph client with admin account: {self._system_account_email}")
+            print(f"[INFO] Initializing Graph client with admin account: {self._system_account_email}")
             
             try:
-                # Create credential object
+                # Create credential object for application permissions
                 credential = ClientSecretCredential(
                     tenant_id=TENANT_ID,
                     client_id=CLIENT_ID,
                     client_secret=CLIENT_SECRET
                 )
                 
-                # Define scopes for application permissions
-                scopes = ['https://graph.microsoft.com/.default']
+                # Create Graph client - no need to specify scopes here since we're using app permissions
+                graph_client = GraphServiceClient(credentials=credential)
                 
-                # Create Graph client with scopes
-                graph_client = GraphServiceClient(credentials=credential, scopes=scopes)
-                
-                # Test that the client works
+                # Test the client with a simple request
                 try:
-                    users = graph_client.users.get()
-                    print("Successfully initialized Microsoft Graph client")
-                    return graph_client
+                    # Test with a simple user lookup for the system admin account
+                    test_user = graph_client.users.by_user_id(self._system_account_email).get()
+                    if test_user:
+                        print(f"[INFO] Successfully verified Graph client access with admin account: {self._system_account_email}")
+                        return graph_client
+                    else:
+                        print("[ERROR] Could not verify admin account access")
+                        return None
                 except Exception as e:
-                    print(f"Error testing Graph client: {e}")
+                    print(f"[ERROR] Failed to test Graph client: {str(e)}")
+                    if 'Authorization_RequestDenied' in str(e):
+                        print("[ERROR] Authorization denied. Please check application permissions in Azure AD")
+                    elif 'InvalidAuthenticationToken' in str(e):
+                        print("[ERROR] Invalid authentication token. Please check CLIENT_SECRET")
                     return None
                     
             except Exception as e:
-                print(f"Error creating Graph client: {e}")
+                print(f"[ERROR] Failed to create Graph client: {str(e)}")
                 return None
             
         except Exception as e:
-            print(f"Error initializing Graph client: {e}")
+            print(f"[ERROR] Graph client initialization error: {str(e)}")
             return None
 
     def _initialize_bedrock_client(self) -> Optional[Any]:
@@ -618,6 +625,88 @@ User message: {user_input}
             print(f"[DEBUG] Access token first 10 chars: {access_token[:10]}")
             print(f"[DEBUG] Chat ID: {chat_id}")
             raise
+
+    async def send_teams_message(self, recipient_email: str, message: str) -> bool:
+        """
+        Send a Teams message to a specific user using the system admin account.
+        
+        Args:
+            recipient_email: The email address of the message recipient
+            message: The message content to send
+            
+        Returns:
+            bool: True if message was sent successfully, False otherwise
+        """
+        if not self.graph_client:
+            print("[ERROR] Graph client not initialized. Cannot send Teams message.")
+            return False
+            
+        try:
+            print(f"[INFO] Attempting to send Teams message to {recipient_email}")
+            
+            # First, create or get existing chat
+            try:
+                # Check cache first
+                chat_id = self._chat_id_cache.get(recipient_email)
+                
+                if not chat_id:
+                    # Create new chat
+                    chat = Chat(
+                        chat_type="oneOnOne",
+                        members=[
+                            AadUserConversationMember(
+                                roles=["owner"],
+                                user_id=self._system_account_email
+                            ),
+                            AadUserConversationMember(
+                                roles=["owner"],
+                                user_id=recipient_email
+                            )
+                        ]
+                    )
+                    
+                    result = self.graph_client.chats.post(chat)
+                    chat_id = result.id
+                    
+                    # Cache the chat ID
+                    with self._chat_id_cache_lock:
+                        self._chat_id_cache[recipient_email] = chat_id
+                    
+                    print(f"[INFO] Created new Teams chat with ID: {chat_id}")
+                
+                # Send message in the chat
+                chat_message = ChatMessage(
+                    content=message
+                )
+                
+                result = self.graph_client.chats.by_chat_id(chat_id).messages.post(chat_message)
+                
+                if result and result.id:
+                    print(f"[INFO] Successfully sent Teams message to {recipient_email}")
+                    return True
+                else:
+                    print("[ERROR] Failed to send Teams message - no message ID returned")
+                    return False
+                    
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[ERROR] Failed to send Teams message: {error_msg}")
+                
+                if "Authorization_RequestDenied" in error_msg:
+                    print("[ERROR] Authorization denied. Please verify Teams message permissions are granted")
+                elif "InvalidAuthenticationToken" in error_msg:
+                    print("[ERROR] Invalid authentication token. Token may have expired")
+                elif "ResourceNotFound" in error_msg:
+                    print(f"[ERROR] Could not find user: {recipient_email}")
+                    # Clear cache in case the user was removed
+                    with self._chat_id_cache_lock:
+                        self._chat_id_cache.pop(recipient_email, None)
+                
+                return False
+                
+        except Exception as e:
+            print(f"[ERROR] Unexpected error sending Teams message: {str(e)}")
+            return False
 
     async def schedule_meeting(self, host_email: str, visitor_name: str, purpose: str) -> bool:
         """Schedule a calendar meeting using Microsoft Graph API and notify the host via Teams."""
