@@ -442,42 +442,32 @@ User message: {user_input}
             return None
 
     def get_system_account_token(self) -> str:
-        CLIENT_ID = os.getenv("CLIENT_ID")
-        TENANT_ID = os.getenv("TENANT_ID")
-        AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-        SCOPES = ["Chat.ReadWrite", "User.Read", "Chat.Create"]
-        REDIRECT_URI = os.getenv("REDIRECT_URI", "https://yourapp.up.railway.app/auth/callback")  # Get from env or use default
-        
-        app = PublicClientApplication(
-            CLIENT_ID,
-            authority=AUTHORITY
-        )
-        accounts = app.get_accounts(username=self._system_account_email)
-        result = None
-        if accounts:
-            try:
-                result = app.acquire_token_silent(SCOPES, account=accounts[0])
-            except Exception as e:
-                print(f"Error acquiring silent token: {e}")
-                result = None
-                
-        if not result or 'access_token' not in result:
-            print("No cached token found or token expired, acquiring interactively...")
-            try:
-                result = app.acquire_token_interactive(
-                    scopes=SCOPES,
-                    login_hint=self._system_account_email,
-                    redirect_uri=REDIRECT_URI
-                )
-            except Exception as e:
-                print(f"Error acquiring interactive token: {e}")
-                raise Exception(f"Failed to acquire system account access token: {str(e)}")
-                
-        if not result or 'access_token' not in result or not result['access_token']:
-            raise Exception("Failed to acquire system account access token.")
+        """Get an access token using client credentials flow instead of interactive."""
+        try:
+            # Initialize confidential client application
+            app = msal.ConfidentialClientApplication(
+                client_id=CLIENT_ID,
+                client_credential=CLIENT_SECRET,
+                authority=f"https://login.microsoftonline.com/{TENANT_ID}"
+            )
             
-        print(f"[DEBUG] Acquired access token: {result['access_token'][:10]}... (truncated)")
-        return result['access_token']
+            # Acquire token for client
+            result = app.acquire_token_for_client(
+                scopes=["https://graph.microsoft.com/.default"]
+            )
+            
+            if "access_token" not in result:
+                error = result.get("error", "")
+                desc = result.get("error_description", "")
+                print(f"Error getting token: {error} - {desc}")
+                raise Exception("Failed to acquire access token")
+                
+            print(f"[DEBUG] Acquired access token: {result['access_token'][:10]}... (truncated)")
+            return result["access_token"]
+            
+        except Exception as e:
+            print(f"Error acquiring token: {str(e)}")
+            raise Exception(f"Failed to acquire access token: {str(e)}")
 
     def get_user_id(self, email: str, access_token: str) -> str:
         if not access_token:
