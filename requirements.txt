@@ -1,4 +1,4 @@
-fuzzywuzzy
+fuzzywuzzy==0.18.0
 python-Levenshtein==0.21.1
 msal==1.25.0
 msgraph-sdk==1.0.0
