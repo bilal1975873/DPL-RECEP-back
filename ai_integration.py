@@ -586,31 +586,37 @@ User message: {user_input}
 
     async def send_message_to_host(self, chat_id: str, access_token: str, message: str):
         """Send a Teams message using Graph client with delegated permissions."""
-        if not access_token:
-            raise Exception("Access token is empty when trying to send message.")
-            
-        if not chat_id:
-            raise Exception("Chat ID is empty when trying to send message.")
-            
-        if not message:
-            raise Exception("Message content is empty.")
-
-        if not self.graph_client:
-            self.initialize_graph_client_with_token(access_token)
-
         try:
-            chat_message = {
-                "body": {
+            print("[DEBUG] Starting send_message_to_host...")
+            if not access_token:
+                raise Exception("Access token is empty when trying to send message.")
+                
+            if not chat_id:
+                raise Exception("Chat ID is empty when trying to send message.")
+                
+            if not message:
+                raise Exception("Message content is empty.")
+
+            print(f"[DEBUG] Initializing Graph client for chat {chat_id}")
+            if not self.graph_client:
+                self.initialize_graph_client_with_token(access_token)
+
+            chat_message = ChatMessage(
+                body={
                     "content": message,
                     "contentType": "text"
                 }
-            }
+            )
             
-            await self.graph_client.chats.by_chat_id(chat_id).messages.post(chat_message)
-            print("[DEBUG] Message sent successfully")
+            print(f"[DEBUG] Sending message to chat {chat_id}: {message[:50]}...")
+            result = await self.graph_client.chats.by_chat_id(chat_id).messages.post(chat_message)
+            print(f"[DEBUG] Message sent successfully. Message ID: {result.id if result else 'Unknown'}")
+            return result
 
         except Exception as e:
             print(f"[ERROR] Failed to send Teams message: {str(e)}")
+            print(f"[DEBUG] Access token first 10 chars: {access_token[:10]}")
+            print(f"[DEBUG] Chat ID: {chat_id}")
             raise
 
     async def schedule_meeting(self, host_email: str, visitor_name: str, purpose: str) -> bool:
@@ -676,20 +682,38 @@ User message: {user_input}
 
             # --- Teams Notification ---
             try:
+                print("[DEBUG] Starting Teams notification process...")
                 access_token = self.get_system_account_token()
+                print("[DEBUG] Got access token successfully")
+                
                 if not access_token:
                     raise Exception("Access token is empty after acquisition!")
+                    
+                print(f"[DEBUG] Getting user ID for host: {host_email}")
                 host_user_id = self.get_user_id(host_email, access_token)
+                print(f"[DEBUG] Got host user ID: {host_user_id}")
+                
+                print(f"[DEBUG] Getting user ID for system account: {self._system_account_email}")
                 system_user_id = self.get_user_id(self._system_account_email, access_token)
-                chat_id = self.create_or_get_chat(host_user_id, system_user_id, access_token)
+                print(f"[DEBUG] Got system user ID: {system_user_id}")
+                
+                print("[DEBUG] Creating/getting chat...")
+                chat_id = await self.create_or_get_chat(host_user_id, system_user_id, access_token)
+                print(f"[DEBUG] Got chat ID: {chat_id}")
+                
                 message = (
                     f"A visitor has arrived at reception to meet you: {visitor_name}. "
                     "Please check the Teams calendar for details."
                 )
-                self.send_message_to_host(chat_id, access_token, message)
-                print(f"Teams notification sent to {host_email}")
+                
+                print("[DEBUG] Sending message...")
+                await self.send_message_to_host(chat_id, access_token, message)
+                print(f"[DEBUG] Teams notification sent successfully to {host_email}")
+                
             except Exception as e:
-                print(f"Error sending Teams notification: {e}")
+                print(f"[ERROR] Failed to send Teams notification: {str(e)}")
+                print(f"[ERROR] Full error details: {e.__class__.__name__}: {str(e)}")
+                # Don't raise the exception - we want the function to return True if meeting was created
 
             return True
 
