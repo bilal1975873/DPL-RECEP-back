@@ -11,7 +11,7 @@ from msgraph.generated.models.chat_message import ChatMessage
 from msgraph.generated.models.chat import Chat
 from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember
 from azure.core.credentials import TokenCredential
-from azure.identity import OnBehalfOfCredential, AccessTokenCredential
+from azure.identity import OnBehalfOfCredential
 
 class GraphTokenCredential(TokenCredential):
     """TokenCredential implementation for access token authentication."""
