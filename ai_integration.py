@@ -442,35 +442,43 @@ User message: {user_input}
             return None
 
     def get_system_account_token(self) -> str:
-        """Get access token using client credentials flow instead of interactive auth"""
         CLIENT_ID = os.getenv("CLIENT_ID")
         TENANT_ID = os.getenv("TENANT_ID")
-        CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+        AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+        SCOPES = ["Chat.ReadWrite", "User.Read", "Chat.Create"]
+        REDIRECT_URI = os.getenv("REDIRECT_URI", "https://yourapp.up.railway.app/auth/callback")  # Get from env or use default
         
-        if not all([CLIENT_ID, TENANT_ID, CLIENT_SECRET]):
-            raise Exception("Missing required environment variables for authentication")
-            
-        credential = ClientSecretCredential(
-            tenant_id=TENANT_ID,
-            client_id=CLIENT_ID,
-            client_secret=CLIENT_SECRET
+        app = PublicClientApplication(
+            CLIENT_ID,
+            authority=AUTHORITY,
+            redirect_uri=REDIRECT_URI  # Add redirect URI here
         )
-        
-        # Define required scopes for application
-        scopes = ['https://graph.microsoft.com/.default']
-        
-        try:
-            # Get token using client credentials
-            access_token = credential.get_token(scopes)
-            if not access_token or not access_token.token:
-                raise Exception("Failed to acquire access token")
+        accounts = app.get_accounts(username=self._system_account_email)
+        result = None
+        if accounts:
+            try:
+                result = app.acquire_token_silent(SCOPES, account=accounts[0])
+            except Exception as e:
+                print(f"Error acquiring silent token: {e}")
+                result = None
                 
-            print(f"[DEBUG] Successfully acquired access token")
-            return access_token.token
+        if not result or 'access_token' not in result:
+            print("No cached token found or token expired, acquiring interactively...")
+            try:
+                result = app.acquire_token_interactive(
+                    scopes=SCOPES,
+                    login_hint=self._system_account_email,
+                    redirect_uri=REDIRECT_URI  # Also specify redirect URI here
+                )
+            except Exception as e:
+                print(f"Error acquiring interactive token: {e}")
+                raise Exception(f"Failed to acquire system account access token: {str(e)}")
+                
+        if not result or 'access_token' not in result or not result['access_token']:
+            raise Exception("Failed to acquire system account access token.")
             
-        except Exception as e:
-            print(f"[ERROR] Failed to acquire token: {str(e)}")
-            raise Exception(f"Failed to acquire access token: {str(e)}")
+        print(f"[DEBUG] Acquired access token: {result['access_token'][:10]}... (truncated)")
+        return result['access_token']
 
     def get_user_id(self, email: str, access_token: str) -> str:
         if not access_token:
