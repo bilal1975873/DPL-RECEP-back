@@ -7,12 +7,34 @@ import os
 from dotenv import load_dotenv
 
 # --- FastAPI & MongoDB Integration ---
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2AuthorizationCodeBearer
+from fastapi.responses import RedirectResponse, JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime, timezone, timedelta
+from authlib.integrations.starlette_client import OAuth
+from starlette.middleware.sessions import SessionMiddleware
+from jose import JWTError, jwt
+
+# OAuth2 configuration
+oauth = OAuth()
+oauth.register(
+    name='azure',
+    client_id=os.getenv("CLIENT_ID"),
+    client_secret=os.getenv("CLIENT_SECRET"),
+    server_metadata_url=f'https://login.microsoftonline.com/{os.getenv("TENANT_ID")}/v2.0/.well-known/openid-configuration',
+    client_kwargs={
+        'scope': 'https://graph.microsoft.com/.default offline_access openid profile email'
+    }
+)
+
+# JWT Settings
+SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 # Initialize FastAPI app with lifespan context
 from contextlib import asynccontextmanager
@@ -66,6 +88,103 @@ if not MONGODB_URI:
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.get_default_database()
 visitors_collection = db["visitors"]
+
+# Add OAuth2 and JWT configuration
+oauth2_scheme = OAuth2AuthorizationCodeBearer(
+    authorizationUrl=f"https://login.microsoftonline.com/{os.getenv('TENANT_ID')}/oauth2/v2.0/authorize",
+    tokenUrl=f"https://login.microsoftonline.com/{os.getenv('TENANT_ID')}/oauth2/v2.0/token"
+)
+
+# JWT configuration 
+SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
+
+# Add session middleware for authentication
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SECRET_KEY,
+    max_age=3600,
+    same_site='none',
+    secure=True
+)
+
+# Authentication models
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+    user: dict
+
+class TokenData(BaseModel):
+    username: Optional[str] = None
+
+# Authentication utility functions
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    credentials_exception = HTTPException(
+        status_code=401,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+    return token_data
+
+# Authentication routes
+@app.get("/login")
+async def login(request: Request):
+    redirect_uri = request.url_for('auth_callback')
+    return await oauth.azure.authorize_redirect(request, redirect_uri)
+
+@app.get("/auth/callback")
+async def auth_callback(request: Request):
+    try:
+        token = await oauth.azure.authorize_access_token(request)
+        user = await oauth.azure.parse_id_token(request, token)
+        
+        # Create access token
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": user["email"]},
+            expires_delta=access_token_expires
+        )
+        
+        # Store token in session
+        request.session['user'] = dict(user)
+        request.session['access_token'] = token['access_token']
+        
+        return JSONResponse({
+            "access_token": access_token,
+            "token_type": "bearer",
+            "user": user
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.pop('user', None)
+    request.session.pop('access_token', None)
+    return {"message": "Successfully logged out"}
+
+@app.get("/protected")
+async def protected_route(current_user: TokenData = Depends(get_current_user)):
+    return {"message": "This is a protected route", "user": current_user.username}
 
 # Pydantic Visitor model
 class Visitor(BaseModel):
