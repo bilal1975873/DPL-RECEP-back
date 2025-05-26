@@ -1,15 +1,19 @@
-from azure.identity import ClientSecretCredential
 import os
 import json
 import asyncio
 import boto3
 import msal
 import requests
-from graph_client import create_graph_client
+import logging
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta, timezone
 from msgraph import GraphServiceClient
+from graph_client import create_graph_client, search_users, get_users
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.attendee import Attendee
 from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
@@ -43,11 +47,67 @@ class AIReceptionist:
         self._chat_id_cache = {}  # In-memory cache for chat IDs
         self._chat_id_cache_lock = threading.Lock()
         self.bedrock_client = self._initialize_bedrock_client()
-        self.graph_client = None  # Will be set when access token is passed
+        self.graph_client = self._initialize_graph_client()
 
     def _initialize_graph_client(self) -> Optional[GraphServiceClient]:
-        """Initialize the Microsoft Graph client with application permissions."""
+        """Initialize the Microsoft Graph client with client credentials."""
         try:
+            # Check for required credentials
+            if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
+                missing = []
+                if not TENANT_ID: missing.append("TENANT_ID")
+                if not CLIENT_ID: missing.append("CLIENT_ID")
+                if not CLIENT_SECRET: missing.append("CLIENT_SECRET")
+                logger.error(f"Missing required Microsoft Graph credentials: {', '.join(missing)}")
+                return None
+
+            logger.info("Initializing Graph client with application permissions...")
+            client = create_graph_client(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
+            
+            if client:
+                logger.info("Successfully initialized Graph client")
+            else:
+                logger.error("Failed to initialize Graph client")
+                
+            return client
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize Graph client: {str(e)}")
+            return None
+            
+    async def search_employee(self, search_term: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        Search for employees using Microsoft Graph API.
+        
+        Args:
+            search_term (str): Name or email to search for
+            
+        Returns:
+            Optional[List[Dict[str, Any]]]: List of matching employees or None if search fails
+        """
+        if not self.graph_client:
+            logger.error("Graph client not initialized")
+            return None
+        
+        if not search_term:
+            logger.error("Search term cannot be empty")
+            return None
+            
+        try:
+            logger.info(f"Searching for employee with term: {search_term}")
+            results = await search_users(self.graph_client, search_term)
+            
+            if results:
+                logger.info(f"Found {len(results)} matching employees")
+            else:
+                logger.warning("No employees found matching the search criteria")
+                
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to search employees: {str(e)}")
+            return None
+            
             # Check for required credentials
             if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
                 missing = []
@@ -57,7 +117,7 @@ class AIReceptionist:
                 print(f"[ERROR] Missing required Azure AD credentials: {', '.join(missing)}")
                 return None
 
-            print(f"[INFO] Initializing Graph client for app-only auth")
+            print("[DEBUG] Initializing Graph client...")
             
             try:
                 # Create credential object for application permissions
@@ -73,17 +133,8 @@ class AIReceptionist:
                 # Test the client with a simple request
                 try:
                     print("[DEBUG] Testing Graph client connection...")
-                    # Just get the first user with select to minimize data
-                    select = ["id", "displayName", "mail"]
-                    test = graph_client.users.get(
-                        headers={
-                            "ConsistencyLevel": "eventual"
-                        },
-                        query_parameters={
-                            "$top": 1,
-                            "$select": ",".join(select)
-                        }
-                    )
+                    # Just get users with basic filtering
+                    test = graph_client.users.get()
                     
                     print("[DEBUG] Graph API response received")
                     if test:
@@ -570,13 +621,39 @@ User message: {user_input}
         response.raise_for_status()
         return response.json()['id']
 
-    def initialize_graph_client_with_token(self, access_token: str):
+    def initialize_graph_client_with_token(self, access_token: str) -> Optional[GraphServiceClient]:
         """Initialize the Microsoft Graph client with delegated permissions using an access token."""
         if not access_token:
-            raise Exception("Access token is empty when initializing Graph client")
+            logger.error("Access token is empty when initializing Graph client")
+            return None
         
-        self.graph_client = create_graph_client(access_token)
-        return self.graph_client
+        try:
+            from azure.identity import TokenCredential
+            from azure.core.credentials import AccessToken
+            import time
+
+            class GraphTokenCredential(TokenCredential):
+                def __init__(self, token: str):
+                    self.token = token
+
+                def get_token(self, *scopes, **kwargs):
+                    return AccessToken(self.token, int(time.time()) + 3600)
+
+            credential = GraphTokenCredential(access_token)
+            scopes = ["https://graph.microsoft.com/.default"]
+            client = GraphServiceClient(credentials=credential, scopes=scopes)
+            
+            if client:
+                logger.info("Successfully initialized Graph client with access token")
+                self.graph_client = client
+                return client
+            else:
+                logger.error("Failed to initialize Graph client with access token")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize Graph client with access token: {str(e)}")
+            return None
 
     async def create_or_get_chat(self, host_user_id: str, system_user_id: str, access_token: str) -> str:
         """Create or get a one-on-one Teams chat using Graph client with delegated permissions."""
