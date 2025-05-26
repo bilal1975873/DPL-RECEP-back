@@ -1,15 +1,11 @@
 import os
 import json
-import requests
 import asyncio
 import boto3
 from graph_client import create_graph_client
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta, timezone
-import msal
-from msal import PublicClientApplication
-from azure.identity import ClientSecretCredential
 from msgraph import GraphServiceClient
 from msgraph.generated.models.email_address import EmailAddress
 from msgraph.generated.models.attendee import Attendee
@@ -17,6 +13,9 @@ from msgraph.generated.models.date_time_time_zone import DateTimeTimeZone
 from msgraph.generated.models.location import Location
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.item_body import ItemBody
+from msgraph.generated.models.chat_message import ChatMessage
+from msgraph.generated.models.chat import Chat
+from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember
 from azure.core.credentials import TokenCredential
 from rapidfuzz import fuzz
 from dotenv import load_dotenv
@@ -25,7 +24,7 @@ import threading
 import time
 from kiota_abstractions.request_information import RequestInformation
 from kiota_abstractions.method import Method
-import boto3
+from fastapi import HTTPException
 
 # Load environment variables
 load_dotenv()
@@ -37,11 +36,11 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 
 class AIReceptionist:
     def __init__(self):
-        self._system_account_email = "SaadSaad@DPL660.onmicrosoft.com"  # Admin account for application permissions
-        self.graph_client = self._initialize_graph_client()
+        self._system_account_email = "SaadSaad@DPL660.onmicrosoft.com"  # Admin account for notifications
         self._chat_id_cache = {}  # In-memory cache for chat IDs
         self._chat_id_cache_lock = threading.Lock()
         self.bedrock_client = self._initialize_bedrock_client()
+        self.graph_client = None  # Will be set when access token is passed
 
     def _initialize_graph_client(self) -> Optional[GraphServiceClient]:
         """Initialize the Microsoft Graph client with application permissions."""
@@ -481,72 +480,86 @@ User message: {user_input}
         response.raise_for_status()
         return response.json()['id']
 
-    def create_or_get_chat(self, host_user_id: str, system_user_id: str, access_token: str) -> str:
+    def initialize_graph_client_with_token(self, access_token: str):
+        """Initialize the Microsoft Graph client with delegated permissions using an access token."""
+        if not access_token:
+            raise Exception("Access token is empty when initializing Graph client")
+        
+        self.graph_client = create_graph_client(access_token)
+        return self.graph_client
+
+    async def create_or_get_chat(self, host_user_id: str, system_user_id: str, access_token: str) -> str:
+        """Create or get a one-on-one Teams chat using Graph client with delegated permissions."""
         if not access_token:
             raise Exception("Access token is empty when trying to create or get chat.")
+
+        if not self.graph_client:
+            self.initialize_graph_client_with_token(access_token)
+
         cache_key = tuple(sorted([host_user_id, system_user_id]))
         with self._chat_id_cache_lock:
             if cache_key in self._chat_id_cache:
                 return self._chat_id_cache[cache_key]
-        url = "https://graph.microsoft.com/v1.0/chats"
-        headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json'
-        }
-        body = {
-            "chatType": "oneOnOne",
-            "members": [
-                {
-                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                    "roles": ["owner"],
-                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{host_user_id}')"
-                },
-                {
-                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                    "roles": ["owner"],
-                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{system_user_id}')"
-                }
-            ]
-        }
-        print(f"[DEBUG] Creating chat between {host_user_id} and {system_user_id}")
-        response = requests.post(url, json=body, headers=headers)
-        if response.status_code == 409:
-            chat_id = self.find_existing_one_on_one_chat(host_user_id, system_user_id, access_token)
+
+        try:
+            # First try to find existing chat
+            chat_id = await self.find_existing_one_on_one_chat(host_user_id, system_user_id)
             if chat_id:
                 with self._chat_id_cache_lock:
                     self._chat_id_cache[cache_key] = chat_id
                 return chat_id
-            else:
-                raise Exception("Could not find existing chat after 409 response.")
-        response.raise_for_status()
-        chat_id = response.json()['id']
-        with self._chat_id_cache_lock:
-            self._chat_id_cache[cache_key] = chat_id
-        return chat_id
 
-    def find_existing_one_on_one_chat(self, host_user_id: str, system_user_id: str, access_token: str) -> str:
-        if not access_token:
-            raise Exception("Access token is empty when trying to find existing chat.")
-        url = "https://graph.microsoft.com/v1.0/me/chats?$filter=chatType eq 'oneOnOne'"
-        headers = {'Authorization': f'Bearer {access_token}'}
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            print(f"[ERROR] Failed to list chats: {response.text}")
+            # If no existing chat, create a new one
+            chat = {
+                "chatType": "oneOnOne",
+                "members": [
+                    {
+                        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                        "roles": ["owner"],
+                        "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{host_user_id}')"
+                    },
+                    {
+                        "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                        "roles": ["owner"],
+                        "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{system_user_id}')"
+                    }
+                ]
+            }
+            
+            new_chat = await self.graph_client.chats.post(chat)
+            chat_id = new_chat.id
+            
+            with self._chat_id_cache_lock:
+                self._chat_id_cache[cache_key] = chat_id
+            return chat_id
+
+        except Exception as e:
+            print(f"[ERROR] Failed to create or get chat: {str(e)}")
+            raise
+
+    async def find_existing_one_on_one_chat(self, host_user_id: str, system_user_id: str) -> str:
+        """Find an existing one-on-one Teams chat using Graph client."""
+        try:
+            # Get all one-on-one chats
+            chats = await self.graph_client.chats.get()
+            
+            # Filter for one-on-one chats
+            one_on_one_chats = [c for c in chats.value if c.chat_type == "oneOnOne"]
+            
+            for chat in one_on_one_chats:
+                members = await self.graph_client.chats.by_chat_id(chat.id).members.get()
+                member_ids = set(m.user_id for m in members.value if m.user_id)
+                if {host_user_id, system_user_id} == member_ids:
+                    return chat.id
+                    
             return None
-        chats = response.json().get('value', [])
-        for chat in chats:
-            members_url = f"https://graph.microsoft.com/v1.0/chats/{chat['id']}/members"
-            members_resp = requests.get(members_url, headers=headers)
-            if members_resp.status_code != 200:
-                continue
-            members = members_resp.json().get('value', [])
-            member_ids = set(m['userId'] for m in members if 'userId' in m)
-            if {host_user_id, system_user_id} == member_ids:
-                return chat['id']
-        return None
 
-    def send_message_to_host(self, chat_id: str, access_token: str, message: str):
-        """Send a Teams message with improved error handling and logging."""
+        except Exception as e:
+            print(f"[ERROR] Failed to find existing chat: {str(e)}")
+            raise
+
+    async def send_message_to_host(self, chat_id: str, access_token: str, message: str):
+        """Send a Teams message using Graph client with delegated permissions."""
         if not access_token:
             raise Exception("Access token is empty when trying to send message.")
             
@@ -555,53 +568,23 @@ User message: {user_input}
             
         if not message:
             raise Exception("Message content is empty.")
-            
-        url = f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages"
-        headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-        }
-        body = {
-            "body": {
-                "content": message,
-                "contentType": "text"
-            }
-        }
-        
-        print(f"[DEBUG] Attempting to send message to chat {chat_id}")
+
+        if not self.graph_client:
+            self.initialize_graph_client_with_token(access_token)
+
         try:
-            response = requests.post(url, json=body, headers=headers, timeout=10)  # Add timeout
+            chat_message = {
+                "body": {
+                    "content": message,
+                    "contentType": "text"
+                }
+            }
             
-            if response.status_code in [401, 403]:
-                print(f"[ERROR] Permission denied or unauthorized. Response: {response.text}")
-                print("[DEBUG] This usually means the access token is invalid or expired")
-                raise Exception("Authorization failed when sending Teams message")
-                
-            elif response.status_code == 404:
-                print(f"[ERROR] Chat not found. Chat ID: {chat_id}")
-                raise Exception("Chat not found")
-                
-            elif response.status_code >= 500:
-                print(f"[ERROR] Teams service error. Status: {response.status_code}")
-                raise Exception("Teams service error")
-                
-            response.raise_for_status()
-            
-            result = response.json()
+            await self.graph_client.chats.by_chat_id(chat_id).messages.post(chat_message)
             print("[DEBUG] Message sent successfully")
-            return result
-            
-        except requests.exceptions.Timeout:
-            print("[ERROR] Request timed out when sending Teams message")
-            raise Exception("Teams message request timed out")
-            
-        except requests.exceptions.RequestException as e:
-            print(f"[ERROR] Network error when sending Teams message: {str(e)}")
-            raise Exception(f"Network error: {str(e)}")
-            
+
         except Exception as e:
-            print(f"[ERROR] Unexpected error when sending Teams message: {str(e)}")
+            print(f"[ERROR] Failed to send Teams message: {str(e)}")
             raise
 
     async def schedule_meeting(self, host_email: str, visitor_name: str, purpose: str) -> bool:
