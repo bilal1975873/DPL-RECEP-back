@@ -470,25 +470,28 @@ User message: {user_input}
             accounts = app.get_accounts(username=self._system_account_email)
             result = None
             if accounts:
+                print("[DEBUG] Found existing account, trying silent token acquisition...")
                 result = app.acquire_token_silent(SCOPES, account=accounts[0])
 
             # If no cached token or expired, acquire interactively
             if not result or 'access_token' not in result:
-                print("No cached token found or token expired, acquiring interactively...")
+                print("[DEBUG] No cached token found or token expired, acquiring interactively...")
                 result = app.acquire_token_interactive(
                     scopes=SCOPES,
                     login_hint=self._system_account_email,
-                    prompt="select_account"
+                    prompt="select_account",
+                    redirect_uri="https://dpl-recep-back-production.up.railway.app/auth/callback"
                 )
 
             if not result or 'access_token' not in result or not result['access_token']:
+                print("[ERROR] Failed to acquire system account access token")
                 raise Exception("Failed to acquire system account access token.")
 
-            print(f"[DEBUG] Acquired access token: {result['access_token'][:10]}... (truncated)")
+            print(f"[DEBUG] Successfully acquired access token: {result['access_token'][:10]}... (truncated)")
             return result['access_token']
 
         except Exception as e:
-            print(f"Error acquiring token: {str(e)}")
+            print(f"[ERROR] Error in get_system_account_token: {str(e)}")
             raise Exception(f"Failed to acquire access token: {str(e)}")
 
     def get_user_id(self, email: str, access_token: str) -> str:
