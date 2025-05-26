@@ -65,15 +65,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Add CORS middleware
+# Add CORS middleware with proper configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "https://front-recep-dpl.vercel.app"],
+    allow_origin_regex="https://.*\.vercel\.app$",  # Allow all Vercel app domains
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
-    max_age=600  # Cache preflight requests for 10 minutes
+    max_age=3600,
 )
 
 # Load environment variables
@@ -105,8 +106,9 @@ app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
     max_age=3600,
-    same_site='none',
-    secure=True
+    session_cookie="session",
+    https_only=True,
+    same_site="none"
 )
 
 # Authentication models
@@ -1104,6 +1106,15 @@ async def process_message(request: MessageRequest):
     try:
         receptionist = DPLReceptionist()
         
+        # Add CORS headers for OPTIONS request
+        if request.method == "OPTIONS":
+            return {
+                "allow": "POST",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Methods": "*",
+            }
+        
         # Restore state from frontend
         if request.current_step:
             receptionist.current_step = request.current_step
@@ -1118,9 +1129,6 @@ async def process_message(request: MessageRequest):
             if request.visitor_info.get('employee_selection_mode'):
                 receptionist.employee_selection_mode = True
                 receptionist.employee_matches = request.visitor_info.get('employee_matches', [])
-        
-        # Process the message
-        response = await receptionist.process_input(request.message)
         
         # Get visitor info as a dict
         visitor_info = {}
