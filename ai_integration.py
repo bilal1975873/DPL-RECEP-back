@@ -452,29 +452,41 @@ User message: {user_input}
             return None
 
     def get_system_account_token(self) -> str:
-        """Get an access token using client credentials flow instead of interactive."""
+        """Get an access token using interactive authentication."""
         try:
-            # Initialize confidential client application
-            app = msal.ConfidentialClientApplication(
-                client_id=CLIENT_ID,
-                client_credential=CLIENT_SECRET,
-                authority=f"https://login.microsoftonline.com/{TENANT_ID}"
+            CLIENT_ID = os.getenv("CLIENT_ID")
+            TENANT_ID = os.getenv("TENANT_ID")
+            AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+            SCOPES = ["Chat.ReadWrite", "User.Read", "Chat.Create"]
+
+            # Initialize public client application for interactive auth
+            app = msal.PublicClientApplication(
+                CLIENT_ID,
+                authority=AUTHORITY,
+                redirect_uri="https://dpl-recep-back-production.up.railway.app/auth/callback"
             )
-            
-            # Acquire token for client
-            result = app.acquire_token_for_client(
-                scopes=["https://graph.microsoft.com/.default"]
-            )
-            
-            if "access_token" not in result:
-                error = result.get("error", "")
-                desc = result.get("error_description", "")
-                print(f"Error getting token: {error} - {desc}")
-                raise Exception("Failed to acquire access token")
-                
+
+            # Try to get token silently first
+            accounts = app.get_accounts(username=self._system_account_email)
+            result = None
+            if accounts:
+                result = app.acquire_token_silent(SCOPES, account=accounts[0])
+
+            # If no cached token or expired, acquire interactively
+            if not result or 'access_token' not in result:
+                print("No cached token found or token expired, acquiring interactively...")
+                result = app.acquire_token_interactive(
+                    scopes=SCOPES,
+                    login_hint=self._system_account_email,
+                    prompt="select_account"
+                )
+
+            if not result or 'access_token' not in result or not result['access_token']:
+                raise Exception("Failed to acquire system account access token.")
+
             print(f"[DEBUG] Acquired access token: {result['access_token'][:10]}... (truncated)")
-            return result["access_token"]
-            
+            return result['access_token']
+
         except Exception as e:
             print(f"Error acquiring token: {str(e)}")
             raise Exception(f"Failed to acquire access token: {str(e)}")
