@@ -334,9 +334,18 @@ User message: {user_input}
     async def search_employee(self, name: str) -> Optional[Dict[str, Any]]:
         """Search for an employee by name using Microsoft Graph API."""
         try:
+            # Initialize Graph client with system credentials if not initialized
             if self.graph_client is None:
-                print("Graph client not initialized. Cannot search for employees.")
-                return None
+                try:
+                    access_token = self.get_system_account_token()
+                    if access_token:
+                        self.initialize_graph_client_with_token(access_token)
+                    else:
+                        print("Failed to get system access token")
+                        return None
+                except Exception as e:
+                    print(f"Error initializing Graph client: {e}")
+                    return None
 
             # Attempt to get user details with retries
             retries = 3
