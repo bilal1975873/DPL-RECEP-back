@@ -1,6 +1,6 @@
 import re
 from typing import Optional, List, Dict, Any, Tuple
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 
 def extract_visitor_info(text: str, field_type: str) -> Optional[str]:
     text = text.strip()
