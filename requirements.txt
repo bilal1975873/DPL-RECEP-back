@@ -1,9 +1,10 @@
-rapidfuzz==3.13.0
+fuzzywuzzy
+python-Levenshtein==0.21.1
 msal==1.25.0
-azure-identity==1.15.0
 msgraph-sdk==1.0.0
 python-dotenv==1.0.0
 requests==2.31.0
+azure-identity==1.15.0
 motor==3.3.2
 pymongo[srv]==4.6.1
 fastapi==0.105.0
