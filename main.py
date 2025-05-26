@@ -18,17 +18,33 @@ from datetime import datetime, timezone, timedelta
 from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
 from jose import JWTError, jwt
+from client_config import ClientConfig
 
-# OAuth2 configuration
+# OAuth2 configuration with delegated permissions
+auth_config = {
+    'client_id': CLIENT_ID,
+    'client_secret': CLIENT_SECRET,
+    'auth_uri': f'https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/authorize',
+    'token_uri': f'https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token',
+    'scope': [
+        'openid',
+        'profile',
+        'email',
+        'Chat.ReadWrite',
+        'ChatMessage.Send',
+        'User.Read.All',
+        'Calendars.ReadWrite'
+    ],
+    'redirect_uri': 'https://dpl-recep-back-production.up.railway.app/auth/callback',
+}
+
 oauth = OAuth()
 oauth.register(
     name='azure',
-    client_id=os.getenv("CLIENT_ID"),
-    client_secret=os.getenv("CLIENT_SECRET"),
-    server_metadata_url=f'https://login.microsoftonline.com/{os.getenv("TENANT_ID")}/v2.0/.well-known/openid-configuration',
-    client_kwargs={
-        'scope': 'https://graph.microsoft.com/.default offline_access openid profile email'
-    }
+    server_metadata_url=f'https://login.microsoftonline.com/{TENANT_ID}/v2.0/.well-known/openid-configuration',
+    client_id=auth_config['client_id'],
+    client_secret=auth_config['client_secret'],
+    client_kwargs={'scope': ' '.join(auth_config['scope'])}
 )
 
 # JWT Settings
@@ -159,34 +175,33 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     return token_data
 
 # Authentication routes
-@app.get("/login")
+@app.get("/auth/login")
 async def login(request: Request):
-    redirect_uri = request.url_for('auth_callback')
-    return await oauth.azure.authorize_redirect(request, redirect_uri)
+    """Login endpoint that redirects to Microsoft login"""
+    return await oauth.azure.authorize_redirect(
+        request, 
+        auth_config['redirect_uri']
+    )
 
 @app.get("/auth/callback")
 async def auth_callback(request: Request):
+    """Callback endpoint that handles the OAuth response"""
     try:
+        # Get token
         token = await oauth.azure.authorize_access_token(request)
-        user = await oauth.azure.parse_id_token(request, token)
         
-        # Create access token
-        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        access_token = create_access_token(
-            data={"sub": user["email"]},
-            expires_delta=access_token_expires
-        )
+        # Create new client config
+        client_config = ClientConfig(TENANT_ID, CLIENT_ID, CLIENT_SECRET)
         
         # Store token in session
-        request.session['user'] = dict(user)
         request.session['access_token'] = token['access_token']
+        request.session['id_token'] = token.get('id_token')
         
-        return JSONResponse({
-            "access_token": access_token,
-            "token_type": "bearer",
-            "user": user
-        })
+        # Redirect to frontend
+        return RedirectResponse(url="https://front-recep-dpl.vercel.app/dashboard")
+        
     except Exception as e:
+        print(f"Error in auth callback: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/logout")
