@@ -68,13 +68,24 @@ app = FastAPI(lifespan=lifespan)
 # Add CORS middleware with proper configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "https://front-recep-dpl.vercel.app"],
-    allow_origin_regex="https://.*\.vercel\.app$",  # Allow all Vercel app domains
+    allow_origins=[
+        "http://localhost:5173", 
+        "http://localhost:3000",
+        "https://front-recep-dpl.vercel.app",
+        "https://dpl-recep-back-production.up.railway.app"
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app$",  # Allow all Vercel app domains
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Content-Type", 
+        "Authorization", 
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Headers"
+    ],
     expose_headers=["*"],
-    max_age=3600,
+    max_age=3600
 )
 
 # Load environment variables
@@ -101,14 +112,14 @@ SECRET_KEY = os.getenv("SECRET_KEY", os.urandom(32).hex())
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-# Add session middleware for authentication
+# Session middleware configuration
 app.add_middleware(
     SessionMiddleware,
     secret_key=SECRET_KEY,
     max_age=3600,
-    session_cookie="session",
-    https_only=True,
-    same_site="none"
+    session_cookie="dpl_session",
+    https_only=False,  # Allow HTTP for development
+    same_site="lax"    # Less strict same-site policy
 )
 
 # Authentication models
@@ -1098,39 +1109,39 @@ Purpose: {meeting['purpose']}"""
 
 class MessageRequest(BaseModel):
     message: str
-    current_step: str
+    current_step: Optional[str] = None
+    visitor_info: Optional[dict] = None
+
+class MessageResponse(BaseModel):
+    response: str
+    next_step: str
     visitor_info: dict
 
-@app.post("/process-message/")
-async def process_message(request: MessageRequest):
+@app.post("/process-message/", response_model=MessageResponse)
+async def process_message(request: Request, message_req: MessageRequest):
+    """Handle visitor message processing with proper error handling and CORS."""
     try:
         receptionist = DPLReceptionist()
         
-        # Add CORS headers for OPTIONS request
-        if request.method == "OPTIONS":
-            return {
-                "allow": "POST",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Methods": "*",
-            }
-        
-        # Restore state from frontend
-        if request.current_step:
-            receptionist.current_step = request.current_step
+        # Restore state from frontend if provided
+        if message_req.current_step:
+            receptionist.current_step = message_req.current_step
             
-        if request.visitor_info:
+        if message_req.visitor_info:
             # Restore all visitor info attributes
-            for k, v in request.visitor_info.items():
+            for k, v in message_req.visitor_info.items():
                 if hasattr(receptionist.visitor_info, k):
                     setattr(receptionist.visitor_info, k, v)
             
             # Restore employee selection mode and matches if needed
-            if request.visitor_info.get('employee_selection_mode'):
+            if message_req.visitor_info.get('employee_selection_mode'):
                 receptionist.employee_selection_mode = True
-                receptionist.employee_matches = request.visitor_info.get('employee_matches', [])
-        
-        # Get visitor info as a dict
+                receptionist.employee_matches = message_req.visitor_info.get('employee_matches', [])
+
+        # Process the message
+        response = await receptionist.process_input(message_req.message)
+
+        # Get updated visitor info
         visitor_info = {}
         if hasattr(receptionist.visitor_info, 'to_dict'):
             visitor_info = receptionist.visitor_info.to_dict()
@@ -1138,21 +1149,22 @@ async def process_message(request: MessageRequest):
             visitor_info = {k: v for k, v in vars(receptionist.visitor_info).items() 
                           if not k.startswith('_')}
         
-        # Add additional state info
+        # Add state info
         visitor_info['employee_selection_mode'] = receptionist.employee_selection_mode
         visitor_info['employee_matches'] = receptionist.employee_matches
         
-        # For complete state, provide special handling
+        # Handle complete state
         if receptionist.current_step == 'complete':
             visitor_info['registration_completed'] = True
-            response = "Your registration is complete. Thank you for visiting DPL!"
             
-        return {
-            "response": response,
-            "next_step": receptionist.current_step,
-            "visitor_info": visitor_info
-        }
+        return MessageResponse(
+            response=response,
+            next_step=receptionist.current_step,
+            visitor_info=visitor_info
+        )
+
     except Exception as e:
+        print(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
