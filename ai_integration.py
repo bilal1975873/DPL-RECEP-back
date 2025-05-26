@@ -2,6 +2,8 @@ import os
 import json
 import asyncio
 import boto3
+import msal
+import requests
 from graph_client import create_graph_client
 from botocore.exceptions import ClientError
 from typing import Dict, Any, Optional, List
