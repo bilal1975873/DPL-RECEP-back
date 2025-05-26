@@ -48,11 +48,16 @@ class AIReceptionist:
     def _initialize_graph_client(self) -> Optional[GraphServiceClient]:
         """Initialize the Microsoft Graph client with application permissions."""
         try:
+            # Check for required credentials
             if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET]):
-                print("[ERROR] Missing required Azure AD credentials in environment variables")
+                missing = []
+                if not TENANT_ID: missing.append("TENANT_ID")
+                if not CLIENT_ID: missing.append("CLIENT_ID")
+                if not CLIENT_SECRET: missing.append("CLIENT_SECRET")
+                print(f"[ERROR] Missing required Azure AD credentials: {', '.join(missing)}")
                 return None
 
-            print(f"[INFO] Initializing Graph client with admin account: {self._system_account_email}")
+            print(f"[INFO] Initializing Graph client for app-only auth")
             
             try:
                 # Create credential object for application permissions
@@ -62,25 +67,36 @@ class AIReceptionist:
                     client_secret=CLIENT_SECRET
                 )
                 
-                # Create Graph client - no need to specify scopes here since we're using app permissions
+                # Create Graph client without scopes (using app permissions)
                 graph_client = GraphServiceClient(credentials=credential)
                 
                 # Test the client with a simple request
                 try:
-                    # Test with a simple user lookup for the system admin account
-                    test_user = graph_client.users.by_user_id(self._system_account_email).get()
-                    if test_user:
-                        print(f"[INFO] Successfully verified Graph client access with admin account: {self._system_account_email}")
+                    print("[DEBUG] Testing Graph client connection...")
+                    # Just get the first user to test permissions
+                    test = graph_client.users.get()
+                    if test and hasattr(test, 'value'):
+                        print("[INFO] Successfully verified Graph client access")
                         return graph_client
                     else:
-                        print("[ERROR] Could not verify admin account access")
+                        print("[ERROR] Graph client test failed - no users returned")
                         return None
                 except Exception as e:
-                    print(f"[ERROR] Failed to test Graph client: {str(e)}")
-                    if 'Authorization_RequestDenied' in str(e):
-                        print("[ERROR] Authorization denied. Please check application permissions in Azure AD")
-                    elif 'InvalidAuthenticationToken' in str(e):
-                        print("[ERROR] Invalid authentication token. Please check CLIENT_SECRET")
+                    error_msg = str(e)
+                    print(f"[ERROR] Graph client test failed: {error_msg}")
+                    
+                    if 'InvalidAuthenticationToken' in error_msg:
+                        print("[ERROR] Invalid authentication token. Please verify CLIENT_SECRET is correct")
+                    elif 'Authorization_RequestDenied' in error_msg:
+                        print("[ERROR] Authorization denied. Please verify these application permissions are granted:")
+                        print("- User.Read.All")
+                        print("- Chat.Create")
+                        print("- Chat.ReadWrite")
+                    elif 'InvalidClient' in error_msg:
+                        print("[ERROR] Invalid client. Please verify CLIENT_ID is correct")
+                    elif 'ResourceNotFound' in error_msg:
+                        print("[ERROR] Resource not found. Please verify TENANT_ID is correct")
+                    
                     return None
                     
             except Exception as e:
@@ -88,7 +104,7 @@ class AIReceptionist:
                 return None
             
         except Exception as e:
-            print(f"[ERROR] Graph client initialization error: {str(e)}")
+            print(f"[ERROR] Unexpected error in Graph client initialization: {str(e)}")
             return None
 
     def _initialize_bedrock_client(self) -> Optional[Any]:
@@ -343,18 +359,16 @@ User message: {user_input}
     async def search_employee(self, name: str) -> Optional[Dict[str, Any]]:
         """Search for an employee by name using Microsoft Graph API."""
         try:
+            print(f"[DEBUG] Starting employee search for name: {name}")
+            
             # Initialize Graph client with system credentials if not initialized
             if self.graph_client is None:
-                try:
-                    access_token = self.get_system_account_token()
-                    if access_token:
-                        self.initialize_graph_client_with_token(access_token)
-                    else:
-                        print("Failed to get system access token")
-                        return None
-                except Exception as e:
-                    print(f"Error initializing Graph client: {e}")
+                print("[DEBUG] Graph client not initialized, initializing now...")
+                self.graph_client = self._initialize_graph_client()
+                if not self.graph_client:
+                    print("[ERROR] Failed to initialize Graph client")
                     return None
+                print("[DEBUG] Successfully initialized Graph client")
 
             # Attempt to get user details with retries
             retries = 3
@@ -363,24 +377,28 @@ User message: {user_input}
 
             while retries > 0:
                 try:
+                    print("[DEBUG] Querying users from Microsoft Graph API...")
+                    # Use $select to get only needed fields and improve performance
                     select_params = ["displayName", "mail", "department", "jobTitle", "id"]
                     result = await self.graph_client.users.get()
 
                     if not result or not result.value:
-                        print("No users found in the organization")
+                        print("[ERROR] No users found in the organization")
                         return None
+                    
+                    print(f"[DEBUG] Successfully retrieved {len(result.value)} users")
                     break  # Success, exit retry loop
                     
                 except Exception as e:
-                    print(f"Attempt {4-retries}/3: Error querying users: {e}")
+                    print(f"[ERROR] Attempt {4-retries}/3: Error querying users: {str(e)}")
                     last_error = e
                     retries -= 1
                     if retries > 0:
-                        print(f"Retrying in {delay} seconds...")
-                        time.sleep(delay)
+                        print(f"[DEBUG] Retrying in {delay} seconds...")
+                        await asyncio.sleep(delay)
                         delay *= 2  # Exponential backoff
                     else:
-                        print("Failed to query users after 3 attempts")
+                        print("[ERROR] Failed to query users after 3 attempts")
                         return None
 
             if last_error and retries == 0:
@@ -389,6 +407,8 @@ User message: {user_input}
             # Search for matches
             search_name = name.lower().strip()
             matches = []
+            
+            print(f"[DEBUG] Searching for matches with name: {search_name}")
             
             # First try exact match
             exact_matches = []
@@ -408,9 +428,11 @@ User message: {user_input}
                     })
             
             if exact_matches:
+                print(f"[DEBUG] Found exact match: {exact_matches[0]['displayName']}")
                 return exact_matches[0]  # Return first exact match
                 
             # If no exact match, try fuzzy matching
+            print("[DEBUG] No exact match found, trying fuzzy matching...")
             for user in result.value:
                 if not user.display_name or not user.mail:
                     continue
@@ -430,6 +452,7 @@ User message: {user_input}
                 best_score = max(scores)
                 
                 if best_score >= 60:  # Threshold for considering it a match
+                    print(f"[DEBUG] Found fuzzy match: {user.display_name} (score: {best_score})")
                     matches.append({
                         "displayName": user.display_name,
                         "email": user.mail,
@@ -439,23 +462,26 @@ User message: {user_input}
                         "score": best_score
                     })
 
+            # Sort matches by score
             matches.sort(key=lambda x: x["score"], reverse=True)
+            
+            # Remove scores before returning
             for match in matches:
                 match.pop("score", None)
 
             if not matches:
-                print(f"No matches found for name: {name}")
+                print(f"[DEBUG] No matches found for name: {name}")
                 return None
             elif len(matches) == 1:
-                print(f"Found single match: {matches[0]['displayName']} ({matches[0]['email']})")
-                # Return the match as a list so it can be handled like multiple matches
-                return [matches[0]]  # This will trigger the selection prompt
+                print(f"[DEBUG] Found single match: {matches[0]['displayName']} ({matches[0]['email']})")
+                return matches[0]
             else:
-                print(f"Found {len(matches)} matches")
+                print(f"[DEBUG] Found {len(matches)} matches")
                 return matches
 
         except Exception as e:
-            print(f"Error searching employee: {str(e)}")
+            print(f"[ERROR] Error in search_employee: {str(e)}")
+            print(f"[ERROR] Stack trace:", exc_info=True)
             return None
 
     def get_system_account_token(self) -> str:
