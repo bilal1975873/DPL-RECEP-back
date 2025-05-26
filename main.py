@@ -1,10 +1,14 @@
+import os
+from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
+
+import asyncio
 from ai_integration import AIReceptionist
 from flows import (guest_flow, SUPPLIERS, vendor_flow, validate_cnic, validate_phone, validate_name, validate_email,
                   validate_group_size, get_error_message)
 from prompts import STEP_PROMPTS
-import asyncio
-import os
-from dotenv import load_dotenv
 
 # --- FastAPI & MongoDB Integration ---
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -19,6 +23,17 @@ from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
 from jose import JWTError, jwt
 from client_config import ClientConfig
+
+# Load environment variables
+load_dotenv()
+
+# Get Azure AD credentials
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+TENANT_ID = os.getenv("TENANT_ID")
+
+if not all([CLIENT_ID, CLIENT_SECRET, TENANT_ID]):
+    raise ValueError("Missing required Azure AD environment variables (CLIENT_ID, CLIENT_SECRET, TENANT_ID)")
 
 # OAuth2 configuration with delegated permissions
 auth_config = {
