@@ -442,22 +442,35 @@ User message: {user_input}
             return None
 
     def get_system_account_token(self) -> str:
+        """Get access token using client credentials flow instead of interactive auth"""
         CLIENT_ID = os.getenv("CLIENT_ID")
         TENANT_ID = os.getenv("TENANT_ID")
-        AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-        SCOPES = ["Chat.ReadWrite", "User.Read", "Chat.Create"]
-        app = PublicClientApplication(CLIENT_ID, authority=AUTHORITY)
-        accounts = app.get_accounts(username=self._system_account_email)
-        result = None
-        if accounts:
-            result = app.acquire_token_silent(SCOPES, account=accounts[0])
-        if not result or 'access_token' not in result:
-            print("No cached token found or token expired, acquiring interactively...")
-            result = app.acquire_token_interactive(scopes=SCOPES, login_hint=self._system_account_email)
-        if not result or 'access_token' not in result or not result['access_token']:
-            raise Exception("Failed to acquire system account access token.")
-        print(f"[DEBUG] Acquired access token: {result['access_token'][:10]}... (truncated)")
-        return result['access_token']
+        CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+        
+        if not all([CLIENT_ID, TENANT_ID, CLIENT_SECRET]):
+            raise Exception("Missing required environment variables for authentication")
+            
+        credential = ClientSecretCredential(
+            tenant_id=TENANT_ID,
+            client_id=CLIENT_ID,
+            client_secret=CLIENT_SECRET
+        )
+        
+        # Define required scopes for application
+        scopes = ['https://graph.microsoft.com/.default']
+        
+        try:
+            # Get token using client credentials
+            access_token = credential.get_token(scopes)
+            if not access_token or not access_token.token:
+                raise Exception("Failed to acquire access token")
+                
+            print(f"[DEBUG] Successfully acquired access token")
+            return access_token.token
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to acquire token: {str(e)}")
+            raise Exception(f"Failed to acquire access token: {str(e)}")
 
     def get_user_id(self, email: str, access_token: str) -> str:
         if not access_token:
