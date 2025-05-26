@@ -27,22 +27,24 @@ class GraphTokenCredential(TokenCredential):
         return AccessToken(self.access_token, int(time.time()) + 3600)
 
 def create_graph_client(access_token: str) -> Optional[GraphServiceClient]:
-    """Create a Microsoft Graph client with delegated permissions using an access token."""
+    """Create a Microsoft Graph client with application permissions using an access token."""
     try:
         # Create credential from access token
         credential = GraphTokenCredential(access_token)
         
-        # For delegated permissions, we don't need to specify scopes when creating the client
-        # The scopes were already specified when getting the token
+        # Create client with application permissions
         client = GraphServiceClient(credentials=credential)
         
-        # Test the client
+        # Test the client by looking up the system admin account
         try:
-            # Make a simple test request
             print("[DEBUG] Testing Graph client connection...")
             test = client.users.get()
-            print("[DEBUG] Successfully created and tested Graph client with delegated permissions")
-            return client
+            if test:
+                print("[DEBUG] Successfully created and tested Graph client with application permissions")
+                return client
+            else:
+                print("[ERROR] Could not verify Graph client connection")
+                return None
         except Exception as e:
             print(f"[ERROR] Graph client test failed: {str(e)}")
             return None
