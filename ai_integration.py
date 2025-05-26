@@ -18,7 +18,7 @@ from msgraph.generated.models.location import Location
 from msgraph.generated.models.event import Event
 from msgraph.generated.models.item_body import ItemBody
 from azure.core.credentials import TokenCredential
-from fuzzywuzzy import fuzz
+from rapidfuzz import fuzz
 from dotenv import load_dotenv
 from prompts import SYSTEM_PERSONALITY, STEP_PROMPTS, RESPONSE_TEMPLATES, FLOW_CONSTRAINTS
 import threading
