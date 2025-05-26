@@ -73,29 +73,60 @@ class AIReceptionist:
                 # Test the client with a simple request
                 try:
                     print("[DEBUG] Testing Graph client connection...")
-                    # Just get the first user to test permissions
-                    test = graph_client.users.get()
-                    if test and hasattr(test, 'value'):
-                        print("[INFO] Successfully verified Graph client access")
-                        return graph_client
-                    else:
-                        print("[ERROR] Graph client test failed - no users returned")
-                        return None
+                    # Just get the first user with select to minimize data
+                    select = ["id", "displayName", "mail"]
+                    test = graph_client.users.get(
+                        headers={
+                            "ConsistencyLevel": "eventual"
+                        },
+                        query_parameters={
+                            "$top": 1,
+                            "$select": ",".join(select)
+                        }
+                    )
+                    
+                    print("[DEBUG] Graph API response received")
+                    if test:
+                        print("[DEBUG] Response object exists")
+                        print(f"[DEBUG] Response type: {type(test)}")
+                        print(f"[DEBUG] Response attributes: {dir(test)}")
+                        if hasattr(test, 'value'):
+                            print(f"[DEBUG] Found {len(test.value)} users")
+                            if len(test.value) > 0:
+                                print("[INFO] Successfully verified Graph client access")
+                                return graph_client
+                    
+                    print("[ERROR] Graph client test failed - invalid response format")
+                    return None
                 except Exception as e:
                     error_msg = str(e)
                     print(f"[ERROR] Graph client test failed: {error_msg}")
+                    print("[DEBUG] Full exception details:", e)
                     
                     if 'InvalidAuthenticationToken' in error_msg:
-                        print("[ERROR] Invalid authentication token. Please verify CLIENT_SECRET is correct")
+                        print("[ERROR] Invalid authentication token. Please verify:")
+                        print("1. CLIENT_SECRET is correct and not expired")
+                        print("2. The app registration exists in Azure AD")
+                        print(f"3. Using correct TENANT_ID: {TENANT_ID}")
                     elif 'Authorization_RequestDenied' in error_msg:
-                        print("[ERROR] Authorization denied. Please verify these application permissions are granted:")
-                        print("- User.Read.All")
-                        print("- Chat.Create")
-                        print("- Chat.ReadWrite")
+                        print("[ERROR] Authorization denied. Please verify in Azure Portal:")
+                        print("1. Application permissions are granted:")
+                        print("   - User.Read.All")
+                        print("   - Chat.Create")
+                        print("   - Chat.ReadWrite")
+                        print("2. Admin consent is granted for these permissions")
+                        print(f"3. App ID {CLIENT_ID} is correct")
                     elif 'InvalidClient' in error_msg:
-                        print("[ERROR] Invalid client. Please verify CLIENT_ID is correct")
+                        print(f"[ERROR] Invalid client. Current CLIENT_ID: {CLIENT_ID}")
+                        print("Please verify in Azure Portal that this is the correct Application (client) ID")
                     elif 'ResourceNotFound' in error_msg:
-                        print("[ERROR] Resource not found. Please verify TENANT_ID is correct")
+                        print(f"[ERROR] Resource not found. Current TENANT_ID: {TENANT_ID}")
+                        print("Please verify this is your Azure AD tenant ID")
+                    elif 'Microsoft.Graph.' in error_msg:
+                        print("[ERROR] Graph API error. Please verify:")
+                        print("1. The Azure AD app has User.Read.All permission")
+                        print("2. Admin consent is granted")
+                        print("3. The account used has sufficient privileges")
                     
                     return None
                     
