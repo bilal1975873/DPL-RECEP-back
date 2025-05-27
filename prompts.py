@@ -45,7 +45,6 @@ STEP_PROMPTS = {
     
     # Guest flow prompts
     "name": "Please enter your name:",
-    "group_size": "Enter group size (1-10):",
     "cnic": "Enter CNIC (Format: 12345-1234567-1):",
     "phone": "Enter phone number (Format: 03001234567):",
     "host": "Who are you visiting?",
