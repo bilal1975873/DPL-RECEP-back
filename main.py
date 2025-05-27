@@ -588,8 +588,21 @@ Purpose: {meeting['purpose']}"""
 
             elif self.current_step == "host":
                 if self.employee_selection_mode:
-                    # Handle employee selection from the list
-                    selected_employee = await self.ai.handle_employee_selection(user_input, self.employee_matches)
+                    # Handle employee selection by name
+                    if user_input.lower() == "none of these" or user_input.lower() == "none of these / enter a different name":
+                        # User wants to search for a different name
+                        self.employee_selection_mode = False
+                        self.employee_matches = []
+                        return "Please enter a different name."
+                    
+                    # Try to find the selected employee by matching the display name
+                    selected_employee = next(
+                        (emp for emp in self.employee_matches 
+                         if emp["displayName"].lower() == user_input.lower() or
+                         user_input.lower() in emp["displayName"].lower()),
+                        None
+                    )
+                    
                     if selected_employee:
                         self.visitor_info.host_confirmed = selected_employee["displayName"]
                         self.visitor_info.host_email = selected_employee["email"]
@@ -598,18 +611,13 @@ Purpose: {meeting['purpose']}"""
                         self.employee_matches = []
                         self.current_step = "purpose"
                         return "Please provide the purpose of your visit."
-                    elif user_input == "0":
-                        # User wants to search for a different name
-                        self.employee_selection_mode = False
-                        self.employee_matches = []
-                        return "Please enter a different name."
                     else:
                         # Invalid selection, show options again
-                        options = "Please select a valid number:\n"
-                        for i, emp in enumerate(self.employee_matches, 1):
+                        options = "Please select one of these names:\n"
+                        for emp in self.employee_matches:
                             dept = emp.get("department", "Unknown Department")
-                            options += f"  {i}. {emp['displayName']} ({dept})\n"
-                        options += "  0. None of these / Enter a different name"
+                            options += f"{emp['displayName']} ({dept})\n"
+                        options += "None of these / Enter a different name"
                         return options
                 else:
                     # Search for employee by name
@@ -618,19 +626,19 @@ Purpose: {meeting['purpose']}"""
                         # Even for single match, show it to user for confirmation
                         self.employee_selection_mode = True
                         self.employee_matches = [employee]
-                        options = "I found the following match. Please confirm by selecting the number:\n"
+                        options = "I found the following match. Please select:\n"
                         dept = employee.get("department", "Unknown Department")
-                        options += f"  1. {employee['displayName']} ({dept})\n"
-                        options += "  0. None of these / Enter a different name"
+                        options += f"{employee['displayName']} ({dept})\n"
+                        options += "None of these / Enter a different name"
                         return options
                     elif isinstance(employee, list):
                         self.employee_selection_mode = True
                         self.employee_matches = employee
-                        options = "I found multiple potential matches. Please select one by number:\n"
-                        for i, emp in enumerate(employee, 1):
+                        options = "I found multiple potential matches. Please select one:\n"
+                        for emp in employee:
                             dept = emp.get("department", "Unknown Department")
-                            options += f"  {i}. {emp['displayName']} ({dept})\n"
-                        options += "  0. None of these / Enter a different name"
+                            options += f"{emp['displayName']} ({dept})\n"
+                        options += "None of these / Enter a different name"
                         return options
                     else:
                         return "No matches found. Please enter a different name."
