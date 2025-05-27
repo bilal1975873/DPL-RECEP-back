@@ -71,9 +71,8 @@ scheduled_flow = {
 }
 
 # Guest flow requirements and steps
-guest_flow = {
-    "required_fields": ["visitor_name", "visitor_cnic", "visitor_phone", "host_confirmed", "purpose"],
-    "steps": ["name", "group_size", "cnic", "phone", "host", "purpose", "confirm", "complete"],
+guest_flow = {    "required_fields": ["visitor_name", "visitor_cnic", "visitor_phone", "host_confirmed", "purpose"],
+    "steps": ["name", "cnic", "phone", "host", "purpose", "confirm", "complete"],
     "validations": {
         "visitor_cnic": validate_cnic,
         "visitor_phone": validate_phone
