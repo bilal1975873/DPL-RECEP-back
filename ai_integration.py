@@ -573,20 +573,33 @@ User message: {user_input}
             TENANT_ID = os.getenv("TENANT_ID")
             CLIENT_SECRET = os.getenv("CLIENT_SECRET")
             AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-            SCOPES = ["https://graph.microsoft.com/.default"]  # Use .default scope for application permissions
+            # Use specific scopes for Teams chat operations
+            SCOPES = [
+                "https://graph.microsoft.com/Chat.ReadWrite",
+                "https://graph.microsoft.com/Chat.Create",
+                "https://graph.microsoft.com/User.Read.All"
+            ]
 
-            # Initialize confidential client application for app authentication
+            # Initialize confidential client application for delegated authentication
             app = msal.ConfidentialClientApplication(
                 client_id=CLIENT_ID,
                 client_credential=CLIENT_SECRET,
-                authority=AUTHORITY
+                authority=AUTHORITY,
+                token_cache=None  # Don't cache tokens for security
             )
 
-            # Get token using client credentials flow
-            result = app.acquire_token_for_client(scopes=SCOPES)
+            # Get token using delegated permissions with username and password (interactive flow)
+            result = app.acquire_token_silent(scopes=SCOPES, account=None)
+            if not result:
+                # No token in cache, need to acquire a new one
+                result = app.acquire_token_by_username_password(
+                    username=os.getenv("GRAPH_USERNAME"),  # The username to authenticate with
+                    password=os.getenv("GRAPH_PASSWORD"),  # The password to authenticate with
+                    scopes=SCOPES
+                )
             
             if not result or 'access_token' not in result:
-                logger.error("Failed to acquire access token using client credentials")
+                logger.error("Failed to acquire access token using delegated permissions")
                 error_desc = result.get('error_description', 'No error description') if result else 'No result'
                 logger.error(f"Error details: {error_desc}")
                 raise Exception("Failed to acquire access token")
@@ -629,8 +642,13 @@ User message: {user_input}
                     return AccessToken(self.token, int(time.time()) + 3600)
 
             credential = GraphTokenCredential(access_token)
-            scopes = ["https://graph.microsoft.com/.default"]
-            client = GraphServiceClient(credentials=credential, scopes=scopes)
+            # Use specific scopes required for Teams chat operations
+            chat_scopes = [
+                "Chat.ReadWrite",
+                "Chat.Create",
+                "User.Read.All"
+            ]
+            client = GraphServiceClient(credentials=credential, scopes=chat_scopes)
             
             if client:
                 logger.info("Successfully initialized Graph client with access token")
