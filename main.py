@@ -615,10 +615,14 @@ Purpose: {meeting['purpose']}"""
                     # Search for employee by name
                     employee = await self.ai.search_employee(user_input)
                     if isinstance(employee, dict):
-                        self.visitor_info.host_confirmed = employee["displayName"]
-                        self.visitor_info.host_email = employee["email"]
-                        self.current_step = "purpose"
-                        return "Please provide the purpose of your visit."
+                        # Even for single match, show it to user for confirmation
+                        self.employee_selection_mode = True
+                        self.employee_matches = [employee]
+                        options = "I found the following match. Please confirm by selecting the number:\n"
+                        dept = employee.get("department", "Unknown Department")
+                        options += f"  1. {employee['displayName']} ({dept})\n"
+                        options += "  0. None of these / Enter a different name"
+                        return options
                     elif isinstance(employee, list):
                         self.employee_selection_mode = True
                         self.employee_matches = employee
