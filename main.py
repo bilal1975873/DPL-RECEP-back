@@ -556,21 +556,12 @@ Purpose: {meeting['purpose']}"""
                     "current_step": self.current_step,
                     **self.visitor_info.to_dict()
                 }
-                try:
-                    group_size = int(user_input.strip())
-                    if group_size < 1:
-                        return await self.get_ai_response(user_input, {**context, "validation_error": "size_too_small"}) or "Please enter a valid group size (at least 1)."
-                    if group_size > 10:
-                        return await self.get_ai_response(user_input, {**context, "validation_error": "size_too_large"}) or "Maximum group size is 10 people. Please enter a smaller number."
-                    self.visitor_info.total_members = group_size
-                    self.visitor_info.is_group_visit = group_size > 1
-                    if group_size > 1:
-                        self.visitor_info.group_id = str(datetime.now(timezone.utc).timestamp())
-                    self.current_step = "cnic"
-                    context["current_step"] = self.current_step
-                    return await self.get_ai_response(user_input, context) or "Please provide your CNIC number in the format: 12345-1234567-1."
-                except ValueError:
-                    return "Please enter a valid group size (number)."
+                if not validate_cnic(user_input.strip()):
+                    return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_cnic"}) or "Please provide a valid CNIC number in the format: 12345-1234567-1."
+                self.visitor_info.visitor_cnic = user_input.strip()
+                self.current_step = "phone"
+                context["current_step"] = self.current_step
+                return await self.get_ai_response(user_input, context) or "Please enter your phone number."
             elif self.current_step == "cnic":
                 context = {
                     "current_step": self.current_step,
@@ -591,62 +582,10 @@ Purpose: {meeting['purpose']}"""
                     return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_phone"}) or "Please enter a valid phone number."
                 self.visitor_info.visitor_phone = user_input.strip()
                 
-                # If group, start collecting group member info
-                if self.visitor_info.is_group_visit and len(self.visitor_info.group_members) < self.visitor_info.total_members - 1:
-                    next_member = len(self.visitor_info.group_members) + 2
-                    self.current_step = f"member_{next_member}_name"
-                    context["current_step"] = self.current_step
-                    context["next_member"] = next_member
-                    return await self.get_ai_response(user_input, context) or f"Please enter the name of group member {next_member}:"
-                
                 self.current_step = "host"
                 context["current_step"] = self.current_step
                 return await self.get_ai_response(user_input, context) or "Who are you visiting?"
-            # Group member collection for guest
-            elif self.current_step.startswith("member_"):
-                parts = self.current_step.split("_")
-                member_num = int(parts[1])
-                substep = parts[2]
-                context = {
-                    "current_step": self.current_step,
-                    "member_number": member_num,
-                    "substep": substep,
-                    **self.visitor_info.to_dict()
-                }
-                
-                if substep == "name":
-                    self.visitor_info.group_members.append({"name": user_input.strip()})
-                    self.current_step = f"member_{member_num}_cnic"
-                    context["current_step"] = self.current_step
-                    return await self.get_ai_response(user_input, context) or f"Please enter the CNIC number of group member {member_num} (format: 12345-1234567-1):"
-                elif substep == "cnic":
-                    if not validate_cnic(user_input.strip()):
-                        return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_cnic"}) or f"Please provide a valid CNIC number for group member {member_num} in the format: 12345-1234567-1."
-                    self.visitor_info.group_members[member_num-2]["cnic"] = user_input.strip()
-                    self.current_step = f"member_{member_num}_phone"
-                    context["current_step"] = self.current_step
-                    return await self.get_ai_response(user_input, context) or f"Please enter the phone number of group member {member_num}:"
-                elif substep == "phone":
-                    context = {
-                        "current_step": self.current_step,
-                        "member_number": member_num,
-                        "substep": substep,
-                        **self.visitor_info.to_dict()
-                    }
-                    if not validate_phone(user_input.strip()):
-                        return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_phone"}) or f"Please provide a valid phone number for group member {member_num}."
-                    self.visitor_info.group_members[member_num-2]["phone"] = user_input.strip()
-                    # If more members to collect
-                    if len(self.visitor_info.group_members) < self.visitor_info.total_members - 1:
-                        next_member = len(self.visitor_info.group_members) + 2
-                        self.current_step = f"member_{next_member}_name"
-                        context["current_step"] = self.current_step
-                        context["next_member"] = next_member
-                        return await self.get_ai_response(user_input, context) or f"Please enter the name of group member {next_member}:"
-                    else:
-                        self.current_step = "host"
-                        context["current_step"] = self.current_step
-                        return await self.get_ai_response(user_input, context) or "Who are you visiting?"
+
             elif self.current_step == "host":
                 if self.employee_selection_mode:
                     # Handle employee selection from the list
@@ -703,10 +642,6 @@ Purpose: {meeting['purpose']}"""
                 context["current_step"] = self.current_step
                 # Always show summary for confirmation
                 summary = f"Name: {self.visitor_info.visitor_name}\nCNIC: {self.visitor_info.visitor_cnic}\nPhone: {self.visitor_info.visitor_phone}"
-                if self.visitor_info.is_group_visit:
-                    summary += f"\nGroup size: {self.visitor_info.total_members}"
-                    for idx, member in enumerate(self.visitor_info.group_members, 2):
-                        summary += f"\nMember {idx}: {member.get('name','')} / {member.get('cnic','')} / {member.get('phone','')}"
                 if self.visitor_info.host_confirmed:
                     summary += f"\nHost: {self.visitor_info.host_confirmed}"
                 if self.visitor_info.purpose:
