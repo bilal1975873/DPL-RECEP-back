@@ -77,7 +77,7 @@ RESPONSE_TEMPLATES = {
 FLOW_CONSTRAINTS = """STRICT FLOW ORDER FOR ALL INTERACTIONS:
 
 GUEST FLOW:
-visitor_type(1) -> name -> group_size -> cnic -> phone -> host -> purpose -> confirm -> complete
+visitor_type(1) -> name -> cnic -> phone -> host -> purpose -> confirm -> complete
 
 VENDOR FLOW:
 visitor_type(2) -> supplier -> vendor_name -> vendor_group_size -> vendor_cnic -> vendor_phone -> group_members -> vendor_confirm -> complete
