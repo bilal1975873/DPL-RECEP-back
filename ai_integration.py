@@ -772,48 +772,46 @@ User message: {user_input}
             bool: True if message was sent successfully, False otherwise
         """
         if not self.graph_client:
-            print("[ERROR] Graph client not initialized. Cannot send Teams message.")
+            logger.error("Graph client not initialized. Cannot send Teams message.")
             return False
             
         try:
-            print(f"[INFO] Attempting to send Teams message to {recipient_email}")
+            logger.info(f"Attempting to send Teams message to {recipient_email}")
             
-            # First, create or get existing chat
             try:
-                # Check cache first
-                chat_id = self._chat_id_cache.get(recipient_email)
+                # Get access token first
+                access_token = self.get_system_account_token()
+                if not access_token:
+                    logger.error("Failed to get access token")
+                    return False
+                
+                # Get user IDs
+                recipient_id = self.get_user_id(recipient_email, access_token)
+                system_id = self.get_user_id(self._system_account_email, access_token)
+                
+                # Get or create chat
+                chat_id = await self.create_or_get_chat(recipient_id, system_id, access_token)
                 
                 if not chat_id:
-                    # Create new chat
-                    chat = Chat(
-                        chat_type="oneOnOne",
-                        members=[
-                            AadUserConversationMember(
-                                roles=["owner"],
-                                user_id=self._system_account_email
-                            ),
-                            AadUserConversationMember(
-                                roles=["owner"],
-                                user_id=recipient_email
-                            )
-                        ]
-                    )
-                    
-                    result = self.graph_client.chats.post(chat)
-                    chat_id = result.id
-                    
-                    # Cache the chat ID
-                    with self._chat_id_cache_lock:
-                        self._chat_id_cache[recipient_email] = chat_id
-                    
-                    print(f"[INFO] Created new Teams chat with ID: {chat_id}")
+                    logger.error("Failed to get or create chat")
+                    return False
                 
-                # Send message in the chat
-                chat_message = ChatMessage(
-                    content=message
-                )
+                # Send the message
+                logger.info(f"Sending message to chat {chat_id}")
+                await self.send_message_to_host(chat_id, access_token, message)
+                logger.info("Message sent successfully")
+                return True
                 
-                result = self.graph_client.chats.by_chat_id(chat_id).messages.post(chat_message)
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Failed to send Teams message: {error_msg}")
+                
+                if "Authorization_RequestDenied" in error_msg:
+                    logger.error("Authorization denied. Please verify Teams message permissions are granted")
+                elif "InvalidAuthenticationToken" in error_msg:
+                    logger.error("Invalid authentication token. Token may have expired")
+                elif "ResourceNotFound" in error_msg:
+                    logger.error(f"Could not find user: {recipient_email}")
                 
                 if result and result.id:
                     print(f"[INFO] Successfully sent Teams message to {recipient_email}")
