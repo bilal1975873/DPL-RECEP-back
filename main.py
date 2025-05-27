@@ -588,20 +588,28 @@ Purpose: {meeting['purpose']}"""
 
             elif self.current_step == "host":
                 if self.employee_selection_mode:
-                    # Handle employee selection by name
+                    # Handle employee selection by either number or name
                     if user_input.lower() == "none of these" or user_input.lower() == "none of these / enter a different name":
                         # User wants to search for a different name
                         self.employee_selection_mode = False
                         self.employee_matches = []
                         return "Please enter a different name."
                     
-                    # Try to find the selected employee by matching the display name
-                    selected_employee = next(
-                        (emp for emp in self.employee_matches 
-                         if emp["displayName"].lower() == user_input.lower() or
-                         user_input.lower() in emp["displayName"].lower()),
-                        None
-                    )
+                    # Try to find by number first
+                    if user_input.isdigit():
+                        index = int(user_input) - 1
+                        if 0 <= index < len(self.employee_matches):
+                            selected_employee = self.employee_matches[index]
+                        else:
+                            selected_employee = None
+                    else:
+                        # Try to find the selected employee by matching the display name
+                        selected_employee = next(
+                            (emp for emp in self.employee_matches 
+                             if emp["displayName"].lower() == user_input.lower() or
+                             user_input.lower() in emp["displayName"].lower()),
+                            None
+                        )
                     
                     if selected_employee:
                         self.visitor_info.host_confirmed = selected_employee["displayName"]
