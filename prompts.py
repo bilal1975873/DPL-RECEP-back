@@ -42,10 +42,8 @@ STEP_PROMPTS = {
     "vendor_member_phone": "Enter member {number} phone (Format: 03001234567):",
     "vendor_confirm": "Please review and type 'confirm' to proceed or 'edit' to make changes:",
     "vendor_notify": "Your registration is complete. An admin has been notified.",
-    
-    # Guest flow prompts
+      # Guest flow prompts
     "name": "Please enter your name:",
-    "group_size": "Enter group size (1-10):",
     "cnic": "Enter CNIC (Format: 12345-1234567-1):",
     "phone": "Enter phone number (Format: 03001234567):",
     "host": "Who are you visiting?",
