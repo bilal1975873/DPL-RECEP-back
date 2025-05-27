@@ -10,56 +10,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def create_graph_client(tenant_id: str, client_id: str, client_secret: str) -> Optional[GraphServiceClient]:
-    """Initialize Microsoft Graph client with delegated permissions."""
+    """Initialize Microsoft Graph client with application permissions."""
     try:
-        # Import required modules
-        import msal
-        import os
-        from azure.core.credentials import AccessToken
-        import time
-
-        class DelegatedTokenCredential:
-            def __init__(self, tenant_id: str, client_id: str, client_secret: str):
-                self.tenant_id = tenant_id
-                self.client_id = client_id
-                self.client_secret = client_secret
-                self.app = msal.ConfidentialClientApplication(
-                    client_id=client_id,
-                    client_credential=client_secret,
-                    authority=f"https://login.microsoftonline.com/{tenant_id}"
-                )
-
-            def get_token(self, *scopes, **kwargs):
-                # Try to get token silently first
-                result = self.app.acquire_token_silent(list(scopes), account=None)
-                if not result:
-                    # If no cached token, get new token with username/password
-                    result = self.app.acquire_token_by_username_password(
-                        username=os.getenv("GRAPH_USERNAME"),
-                        password=os.getenv("GRAPH_PASSWORD"),
-                        scopes=list(scopes)
-                    )
-                
-                if result and 'access_token' in result:
-                    return AccessToken(result['access_token'], int(time.time()) + result.get('expires_in', 3600))
-                raise Exception("Failed to acquire token")
-
-        # Create credential object with delegated auth
-        credential = DelegatedTokenCredential(
+        # Create credential object
+        credential = ClientSecretCredential(
             tenant_id=tenant_id,
             client_id=client_id,
             client_secret=client_secret
         )
         
-        # Create Graph client with chat and user scopes
-        scopes = [
-            "https://graph.microsoft.com/Chat.ReadWrite",
-            "https://graph.microsoft.com/Chat.Create",
-            "https://graph.microsoft.com/User.Read.All"
-        ]
+        # Create Graph client with appropriate scopes
+        scopes = ["https://graph.microsoft.com/.default"]
         client = GraphServiceClient(credentials=credential, scopes=scopes)
         
-        logger.info("Successfully created Graph client with delegated permissions")
+        logger.info("Successfully created Graph client")
         return client
         
     except Exception as e:
