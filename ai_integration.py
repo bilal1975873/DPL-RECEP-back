@@ -567,46 +567,35 @@ User message: {user_input}
             return None
 
     def get_system_account_token(self) -> str:
-        """Get an access token using interactive authentication."""
+        """Get an access token using client credentials flow."""
         try:
             CLIENT_ID = os.getenv("CLIENT_ID")
             TENANT_ID = os.getenv("TENANT_ID")
+            CLIENT_SECRET = os.getenv("CLIENT_SECRET")
             AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-            SCOPES = ["Chat.ReadWrite", "User.Read", "Chat.Create"]
+            SCOPES = ["https://graph.microsoft.com/.default"]  # Use .default scope for application permissions
 
-            # Initialize public client application for interactive auth
-            app = msal.PublicClientApplication(
-                CLIENT_ID,
-                authority=AUTHORITY,
-                redirect_uri="https://dpl-recep-back-production.up.railway.app/auth/callback"
+            # Initialize confidential client application for app authentication
+            app = msal.ConfidentialClientApplication(
+                client_id=CLIENT_ID,
+                client_credential=CLIENT_SECRET,
+                authority=AUTHORITY
             )
 
-            # Try to get token silently first
-            accounts = app.get_accounts(username=self._system_account_email)
-            result = None
-            if accounts:
-                print("[DEBUG] Found existing account, trying silent token acquisition...")
-                result = app.acquire_token_silent(SCOPES, account=accounts[0])
-
-            # If no cached token or expired, acquire interactively
+            # Get token using client credentials flow
+            result = app.acquire_token_for_client(scopes=SCOPES)
+            
             if not result or 'access_token' not in result:
-                print("[DEBUG] No cached token found or token expired, acquiring interactively...")
-                result = app.acquire_token_interactive(
-                    scopes=SCOPES,
-                    login_hint=self._system_account_email,
-                    prompt="select_account",
-                    redirect_uri="https://dpl-recep-back-production.up.railway.app/auth/callback"
-                )
+                logger.error("Failed to acquire access token using client credentials")
+                error_desc = result.get('error_description', 'No error description') if result else 'No result'
+                logger.error(f"Error details: {error_desc}")
+                raise Exception("Failed to acquire access token")
 
-            if not result or 'access_token' not in result or not result['access_token']:
-                print("[ERROR] Failed to acquire system account access token")
-                raise Exception("Failed to acquire system account access token.")
-
-            print(f"[DEBUG] Successfully acquired access token: {result['access_token'][:10]}... (truncated)")
+            logger.info(f"Successfully acquired access token: {result['access_token'][:10]}... (truncated)")
             return result['access_token']
 
         except Exception as e:
-            print(f"[ERROR] Error in get_system_account_token: {str(e)}")
+            logger.error(f"Error in get_system_account_token: {str(e)}", exc_info=True)
             raise Exception(f"Failed to acquire access token: {str(e)}")
 
     def get_user_id(self, email: str, access_token: str) -> str:
