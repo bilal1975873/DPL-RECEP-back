@@ -749,30 +749,28 @@ User message: {user_input}
             print(f"[DEBUG] Chat ID: {chat_id}")
             raise
 
-    async def send_teams_message(self, recipient_email: str, message: str) -> bool:
+    async def send_teams_message(self, recipient_email: str, message: str, access_token: str = None) -> bool:
         """
-        Send a Teams message to a specific user using the system admin account.
+        Send a Teams message to a specific user using delegated permissions.
         
         Args:
             recipient_email: The email address of the message recipient
             message: The message content to send
+            access_token: Optional delegated access token from user session
             
         Returns:
             bool: True if message was sent successfully, False otherwise
         """
-        if not self.graph_client:
-            logger.error("Graph client not initialized. Cannot send Teams message.")
+        if not access_token:
+            logger.error("No access token provided for Teams message")
             return False
             
         try:
             logger.info(f"Attempting to send Teams message to {recipient_email}")
             
             try:
-                # Get access token first
-                access_token = self.get_system_account_token()
-                if not access_token:
-                    logger.error("Failed to get access token")
-                    return False
+                # Initialize Graph client with delegated token
+                self.initialize_graph_client_with_token(access_token)
                 
                 # Get user IDs
                 recipient_id = self.get_user_id(recipient_email, access_token)
