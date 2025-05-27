@@ -9,15 +9,19 @@ from jose import JWTError, jwt
 # Load environment variables
 config = Config(".env")
 
-# OAuth2 configuration for user login
+# OAuth2 configuration for Teams integration
+import os
+
 oauth = OAuth()
 oauth.register(
     name='azure',
     client_id=os.getenv("CLIENT_ID"),
     client_secret=os.getenv("CLIENT_SECRET"),
     server_metadata_url=f'https://login.microsoftonline.com/{os.getenv("TENANT_ID")}/v2.0/.well-known/openid-configuration',
+    authorize_url=f'https://login.microsoftonline.com/{os.getenv("TENANT_ID")}/oauth2/v2.0/authorize',
+    access_token_url=f'https://login.microsoftonline.com/{os.getenv("TENANT_ID")}/oauth2/v2.0/token',
     client_kwargs={
-        'scope': 'openid profile email User.Read'  # Only basic user profile access needed for login
+        'scope': 'offline_access Chat.ReadWrite Chat.Create User.Read'
     }
 )
 
