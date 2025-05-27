@@ -548,10 +548,10 @@ Purpose: {meeting['purpose']}"""
                 if not validate_name(user_input.strip()):
                     return get_error_message("name")
                 self.visitor_info.visitor_name = user_input.strip()
-                self.current_step = "group_size"
+                self.current_step = "cnic"
                 context["current_step"] = self.current_step
-                return await self.get_ai_response(user_input, context) or "Please provide the size of your group."
-            elif self.current_step == "group_size":
+                return await self.get_ai_response(user_input, context) or "Please provide your CNIC number in the format: 12345-1234567-1."
+            elif self.current_step == "cnic":
                 context = {
                     "current_step": self.current_step,
                     **self.visitor_info.to_dict()
