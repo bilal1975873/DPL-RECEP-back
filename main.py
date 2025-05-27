@@ -890,7 +890,7 @@ Purpose: {meeting['purpose']}"""
                     except Exception as e:
                         print(f"Error in Teams notification process: {e}")
                     
-                    return await self.get_ai_response(user_input, context) or STEP_PROMPTS["vendor_notify"]
+                    return "Your registration is complete."
                     
                 elif user_input.lower() == "edit":
                     self.current_step = "supplier"
