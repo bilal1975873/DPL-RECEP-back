@@ -8,7 +8,7 @@ import time
 import json
 from typing import Optional
 import msal
-from .auth_utils import (
+from auth_utils import (
     save_tokens, load_tokens, clear_tokens, is_token_expired,
     refresh_access_token, get_valid_tokens, log
 )
