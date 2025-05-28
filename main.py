@@ -11,7 +11,7 @@ from flows import (guest_flow, SUPPLIERS, vendor_flow, validate_cnic, validate_p
 from prompts import STEP_PROMPTS
 
 # --- FastAPI & MongoDB Integration ---
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, status, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2AuthorizationCodeBearer
 from fastapi.responses import RedirectResponse, JSONResponse
@@ -23,6 +23,11 @@ from authlib.integrations.starlette_client import OAuth
 from starlette.middleware.sessions import SessionMiddleware
 from jose import JWTError, jwt
 from client_config import ClientConfig
+import requests
+import time
+import json
+from .auth import router as auth_router
+from .auth_utils import get_valid_tokens, log
 
 # Load environment variables
 load_dotenv()
@@ -72,28 +77,10 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Initialize MongoDB connection
-    retries = 3
-    while retries > 0:
-        try:
-            await client.admin.command('ping')
-            print("MongoDB connected to Atlas successfully!")
-            break
-        except Exception as e:
-            retries -= 1
-            if retries > 0:
-                print(f"Failed to connect to MongoDB Atlas: {e}. Retrying... ({retries} attempts left)")
-                await asyncio.sleep(2)  # Wait 2 seconds before retrying
-            else:
-                print(f"Failed to connect to MongoDB Atlas after multiple attempts: {e}")
-                raise
-    
-    yield  # Application runs here
-    
-    # Shutdown: Close MongoDB connection
-    client.close()
-    print("MongoDB connection closed.")
-
+    """Lifespan context manager for FastAPI."""
+    # startup
+    yield
+    # Shutdown
 app = FastAPI(lifespan=lifespan)
 
 # Add CORS middleware with proper configuration
@@ -551,17 +538,6 @@ Purpose: {meeting['purpose']}"""
                 self.current_step = "cnic"
                 context["current_step"] = self.current_step
                 return await self.get_ai_response(user_input, context) or "Please provide your CNIC number in the format: 12345-1234567-1."
-            elif self.current_step == "cnic":
-                context = {
-                    "current_step": self.current_step,
-                    **self.visitor_info.to_dict()
-                }
-                if not validate_cnic(user_input.strip()):
-                    return await self.get_ai_response(user_input, {**context, "validation_error": "invalid_cnic"}) or "Please provide a valid CNIC number in the format: 12345-1234567-1."
-                self.visitor_info.visitor_cnic = user_input.strip()
-                self.current_step = "phone"
-                context["current_step"] = self.current_step
-                return await self.get_ai_response(user_input, context) or "Please enter your phone number."
             elif self.current_step == "cnic":
                 context = {
                     "current_step": self.current_step,
@@ -1151,6 +1127,71 @@ async def process_message(request: Request, message_req: MessageRequest):
     except Exception as e:
         print(f"Error processing message: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/")
+def root():
+    return {"message": "Welcome! Go to /login to start Microsoft authentication."}
+
+@app.get("/employees")
+def list_employees():
+    tokens = get_valid_tokens()
+    access_token = tokens["access_token"]
+    url = "https://graph.microsoft.com/v1.0/users?$select=displayName,mail,id"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    resp = requests.get(url, headers=headers)
+    if resp.status_code != 200:
+        log(f"Failed to fetch users: {resp.status_code} {resp.text}")
+        return {"error": f"Failed to fetch users: {resp.text}"}
+    users = resp.json().get("value", [])
+    return {"users": users}
+
+@app.post("/start-chat")
+def start_chat(user_id: str = Form(...)):
+    tokens = get_valid_tokens()
+    access_token = tokens["access_token"]
+    # Get current user id
+    me_resp = requests.get("https://graph.microsoft.com/v1.0/me", headers={"Authorization": f"Bearer {access_token}"})
+    if me_resp.status_code != 200:
+        log(f"Failed to get current user: {me_resp.status_code} {me_resp.text}")
+        return {"error": f"Failed to get current user info: {me_resp.text}"}
+    current_user_id = me_resp.json()["id"]
+    chat_url = "https://graph.microsoft.com/v1.0/chats"
+    chat_body = {
+        "chatType": "oneOnOne",
+        "members": [
+            {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{current_user_id}')"
+            },
+            {
+                "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                "roles": ["owner"],
+                "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{user_id}')"
+            }
+        ]
+    }
+    chat_resp = requests.post(chat_url, headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}, json=chat_body)
+    if chat_resp.status_code not in (201, 200):
+        log(f"Failed to create/get chat: {chat_resp.status_code} {chat_resp.text}")
+        return {"error": f"Failed to create/get chat: {chat_resp.text}"}
+    chat_id = chat_resp.json().get("id")
+    return {"chat_id": chat_id}
+
+@app.post("/send-employee-message")
+def send_employee_message(chat_id: str = Form(...), message: str = Form(...)):
+    tokens = get_valid_tokens()
+    access_token = tokens["access_token"]
+    url = f"https://graph.microsoft.com/v1.0/chats/{chat_id}/messages"
+    headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    data = {"body": {"contentType": "text", "content": message}}
+    resp = requests.post(url, headers=headers, json=data)
+    if resp.status_code == 201:
+        log("Message sent")
+        return {"status": "success", "message": "Message sent!"}
+    else:
+        log(f"Failed to send message: {resp.status_code} {resp.text}")
+        return {"status": "error", "message": f"Failed to send message: {resp.text}"}
 
 if __name__ == "__main__":
     import uvicorn
