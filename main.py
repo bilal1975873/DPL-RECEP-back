@@ -502,7 +502,7 @@ Phone: {self.visitor_info.visitor_phone}
 Email: {self.visitor_info.visitor_email}
 Scheduled Time: {meeting['scheduled_time']}
 Purpose: {meeting['purpose']}"""
-                            self.ai.send_message_to_host(chat_id, access_token, message)
+                            await self.ai.send_message_to_host(chat_id, access_token, message)
                             print(f"Teams notification sent to {self.visitor_info.host_confirmed}")
                         except Exception as e:
                             print(f"Error in Teams notification process: {e}")
@@ -886,7 +886,7 @@ Purpose: {meeting['purpose']}"""
                                 message += f"\nGroup size: {self.visitor_info.total_members}"
                                 for idx, member in enumerate(self.visitor_info.group_members, 2):
                                     message += f"\nMember {idx}: {member.get('name','')} / {member.get('cnic','')} / {member.get('phone','')}"
-                            self.ai.send_message_to_host(chat_id, access_token, message)
+                            await self.ai.send_message_to_host(chat_id, access_token, message)
                     except Exception as e:
                         print(f"Error in Teams notification process: {e}")
                     
