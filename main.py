@@ -26,8 +26,8 @@ from client_config import ClientConfig
 import requests
 import time
 import json
-from .auth import router as auth_router
-from .auth_utils import get_valid_tokens, log
+from auth import router as auth_router
+from auth_utils import get_valid_tokens, log
 
 # Load environment variables
 load_dotenv()
